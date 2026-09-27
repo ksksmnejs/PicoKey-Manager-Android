@@ -279,8 +279,27 @@ class PicoKey:
         return {'free': free, 'used': used, 'total': total, 'nfiles': nfiles, 'size': size}
 
     def secure_info(self):
-        self.select_applet()
-        resp, sw = self.send(0x1E, cla=0x80, p1=0x03, ne=256)
+        """Read the secure-boot state, or None if the device cannot report it.
+
+        Indexing resp[0..2] unconditionally raised IndexError whenever the
+        device answered with an error status (0x6A86 "wrong P1/P2" is what an
+        ESP32-S3 without the OTP feature returns) and an empty body. That
+        surfaced as a traceback instead of "this board does not support it",
+        which is both untrue to the actual cause and alarming next to a
+        feature that burns fuses.
+        """
+        try:
+            self.select_applet()
+            resp, sw = self.send(0x1E, cla=0x80, p1=0x03, ne=256)
+        except Exception as e:
+            logger.error("secure_info failed: " + str(e))
+            return None
+        if sw != 0x9000:
+            logger.error("secure_info: device answered SW=%04X" % sw)
+            return None
+        if len(resp) < 3:
+            logger.error("secure_info: short response (%d bytes)" % len(resp))
+            return None
         return {
             'enabled': resp[0] != 0,
             'locked': resp[1] != 0,
