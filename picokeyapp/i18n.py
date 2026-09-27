@@ -183,11 +183,17 @@ STRINGS.update({
 
     # ------------------------------------------------------- extra PHY fields
     "field_usb_product": {"zh": "USB 产品名", "en": "USB product"},
-    "hint_up_btn": {"zh": "用于「用户存在」检测的物理按键 GPIO（如 15）。多数 Pico 板出厂没有用户按键，只有 BOOTSEL；若没焊按键或 GPIO 与实际接线不符，设备就不会要求触摸，只验证 PIN 也能通过。", "en": "GPIO of the physical button used for user-presence checks (e.g. 15). Most Pico boards ship with no user button at all, only BOOTSEL. If no button is soldered, or the GPIO does not match the wiring, the device never asks for a touch and a PIN alone is enough."},
+    "hint_up_btn": {
+        "zh": "用于「用户存在」检测的物理按键 GPIO。ESP32-S3 的 BOOT 键通常接 GPIO0；多数 Pico 板出厂只有 BOOTSEL。写入后需重启才生效。\n\n重要：即便按键配置正确，注册/登录时只要用了 PIN，固件就会按规范跳过按键（pinUvAuthParam 已带 UP 标志），这是设计如此，改 PHY 也强制不了。",
+        "en": "GPIO of the physical button used for user-presence checks. On ESP32-S3 the BOOT button is usually GPIO0; most Pico boards ship with only BOOTSEL. A reboot is required after writing.\n\nImportant: even with the button configured correctly, whenever a PIN is used during registration/login the firmware skips the button on purpose (the pinUvAuthParam already carries the UP flag). That is by design and no PHY change can force it.",
+    },
     "btn_test_presence": {"zh": "测试用户存在（物理按键）", "en": "Test user presence (button)"},
     "msg_testing_presence": {"zh": "等待按键…（请触摸板子上的确认键）", "en": "Waiting for the button… (touch the confirm button)"},
     "msg_presence_ok": {"zh": "已确认按键（用时 %.1f 秒）", "en": "Button confirmed (took %.1f s)"},
-    "msg_presence_instant": {"zh": "设备 %.2f 秒就返回了 —— 它并没有等你按键，说明用户存在检测未真正启用（无按键或 GPIO 不对）", "en": "It answered in %.2f s — it never waited for a button, so user presence is not really enforced (no button, or wrong GPIO)"},
+    "msg_presence_instant": {
+        "zh": "设备 %.2f 秒就返回了，没有等待按键。这个测试本身不带 PIN，按理应当等待，所以说明它认为按键已被按下 —— 多半是该 GPIO 上没有真正的按键，或电平一直被读成「已按下」。另外注意：真正注册/登录时如果用了 PIN，固件按规范会跳过按键，那是设计如此，与这里的结果无关。",
+        "en": "It answered in %.2f s without waiting. This test carries no PIN, so it should have waited — the device therefore believes the button is already pressed, which usually means there is no real button on that GPIO or the level reads as pressed all the time. Separately: during real registration/login, if a PIN is used the firmware skips the button on purpose; that is by design and unrelated to this result.",
+    },
     "msg_presence_failed": {"zh": "用户存在检测失败：{err}。确认板子焊了物理按键，且上面的「确认按键 GPIO」与实际接线一致。", "en": "User presence failed: {err}. Make sure a physical button is soldered and the Confirm button GPIO above matches the wiring."},
     "lbl_up": {"zh": "用户存在(UP)", "en": "User presence (UP)"},
     "up_on": {"zh": "已启用（需要按物理按键）", "en": "Enabled (a physical press is required)"},
