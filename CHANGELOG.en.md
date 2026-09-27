@@ -32,7 +32,7 @@ Optional inputs when running the workflow:
 | Input | Meaning |
 | --- | --- |
 | `bump` | `auto` (default, newest version here) / `patch` / `minor` / `major` / `none` |
-| `overwrite` | Off by default. If the tag exists the workflow **fails with a message** so old versions survive; tick it to replace in place |
+| `overwrite` | **On** by default. If the tag exists it is replaced in place (leaving it unticked fails instead); untick to protect a published version |
 | `draft` / `prerelease` | Publish as a draft / mark as pre-release |
 
 If the build fails the job stops early and no version number is consumed.
