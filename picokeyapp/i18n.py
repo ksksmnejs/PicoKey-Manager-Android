@@ -88,6 +88,10 @@ STRINGS = {
 
     # ------------------------------------------------------------ log page
     "log_title": {"zh": "日志 / APDU", "en": "Log / APDU"},
+    "log_empty": {
+        "zh": "（暂无日志。日志会随连接、读取、刷写等操作自动累积。）",
+        "en": "(No log entries yet. Lines appear as you connect, read and flash.)",
+    },
 
     # ------------------------------------------------------------- channels
     "ch_ccid_title": {"zh": "CCID 智能卡通道", "en": "CCID smartcard channel"},
@@ -235,7 +239,10 @@ STRINGS.update({
     "msg_no_data": {"zh": "（无数据）", "en": "(no data)"},
 
     "err_bootkey_range": {"zh": "启动密钥槽必须在 0-15 之间", "en": "Boot key slot must be between 0 and 15"},
-    "err_secure_unavailable": {"zh": "安全启动不可用（设备未返回数据）", "en": "Secure boot unavailable (device returned no data)"},
+    "err_secure_unavailable": {
+        "zh": "这块板子没有返回安全启动状态 —— 多半是固件未实现该功能，或当前接口不支持。不要硬写：OTP 熔丝烧错不可逆。",
+        "en": "This board did not report a secure-boot state — the firmware most likely does not implement it, or the current interface does not support it. Do not force it: OTP fuses are irreversible.",
+    },
     "err_usb_product_long": {"zh": "USB 产品名过长（最多 31 字符）", "en": "USB product name too long (31 chars max)"},
 
     # ------------------------------------------------------------ diagnostics
