@@ -120,6 +120,23 @@ If the build fails the job stops early and no version number is consumed.
   this): the CTAPHID KEEPALIVE callback now drives "Touch the button on the
   board"
 
+- **No way to confirm the signing key was actually used**: the build now reads
+  the certificate back out of the finished APK and compares it with the
+  installed key. A mismatch warns that Gradle used a different key — so every
+  build gets a different signature and phones report a signature conflict —
+  instead of leaving you to discover it at install time
+
+- **The log area went blank**: half of the `log()` calls happen on a background
+  worker thread, but they assign to a Kivy property. Updating it off-thread
+  corrupts the Label's texture — the symptom is not a crash but a black
+  rectangle where the log should be. Lines are now queued and appended from
+  the main thread
+- **Reading secure boot raised IndexError**: an unsupported device answers with
+  an empty body, yet the code indexed `resp[0..2]` unconditionally. It now
+  reports "not reported" with a reason instead of throwing a traceback
+- **An empty log was indistinguishable from a broken one**: a hint line is
+  shown while there is nothing logged yet
+
 ### Changed
 
 - **Removed firmware fetching from GitHub / URL** - the `INTERNET` permission is

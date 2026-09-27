@@ -600,7 +600,9 @@ BoxLayout:
     ScrollView:
         Label:
             id: logview
-            text: app.log_text
+            # An empty log and a broken log look identical otherwise: both are
+            # just a black rectangle. Say which one it is.
+            text: app.log_text if app.log_text else '@@log_empty@@'
             size_hint_y: None
             height: max(self.texture_size[1], dp(400))
             text_size: self.width, None
@@ -709,6 +711,9 @@ class PicoKeyApp(App):
         self._fw_data = None
         self._fw_dev = None
         self._fw_kind = None
+        # Log lines are buffered here and flushed on the main thread; see log().
+        self._log_lock = threading.Lock()
+        self._log_pending = []
 
     # ------------------------------------------------------------ plumbing
 
@@ -885,7 +890,30 @@ class PicoKeyApp(App):
     # --------------------------------------------------------------- log
 
     def log(self, msg: str):
-        self.log_text += f"{msg}\n"
+        """Append one line to the log, from any thread.
+
+        Half the log calls happen inside `_worker`'s `fn()`, which runs on a
+        background thread. `log_text` is a Kivy StringProperty bound to a
+        Label, so assigning to it from there drives texture creation off the
+        main thread - and Kivy's GL context is only valid on the main one.
+        The damage does not show up as a crash: the log area just stops
+        painting and renders as a black rectangle, which is exactly what
+        "the log disappeared" looks like.
+
+        So the text is queued here and appended from the main thread, the same
+        way the keepalive callback already does it.
+        """
+        with self._log_lock:
+            self._log_pending.append(str(msg))
+        Clock.schedule_once(self._flush_log)
+
+    def _flush_log(self, _dt):
+        with self._log_lock:
+            if not self._log_pending:
+                return
+            lines = self._log_pending
+            self._log_pending = []
+        self.log_text += "".join(line + "\n" for line in lines)
         if len(self.log_text) > 20000:
             self.log_text = self.log_text[-20000:]
 
