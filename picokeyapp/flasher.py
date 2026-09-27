@@ -273,8 +273,24 @@ class EspLoader:
                 continue
         return False
 
+    def drain(self, timeout: int = 150) -> None:
+        """Throw away anything the endpoint still holds from an earlier command.
+
+        Only called when a response came back garbled: a stale frame sitting in
+        the pipe is the usual reason the next answer does not match the op we
+        just sent. A timeout here means nothing is left, which is success.
+        """
+        deadline = _now() + timeout / 1000.0
+        while _now() < deadline:
+            try:
+                chunk = self.conn.read(64, timeout=max(50, int((deadline - _now()) * 1000)))
+            except Exception:
+                return
+            if not chunk:
+                return
+
     def command(self, op: int, data: bytes = b"", checksum: int = 0,
-                timeout: int = None) -> tuple:
+                timeout: int = None, _retry: bool = True) -> tuple:
         """Send one command and return (value, body)."""
         self._write(slip_encode(self._packet(op, data, checksum)))
         resp = self._read_frame(timeout=timeout)
@@ -284,7 +300,16 @@ class EspLoader:
         size = struct.unpack_from("<H", resp, 2)[0]
         (value,) = struct.unpack_from("<I", resp, 4)
         if direction != 0x01 or r_op != op:
-            raise FirmwareError(t("fw_esp_mismatch", default="unexpected response"))
+            if _retry:
+                # A well-formed frame, just not an answer to what we asked -
+                # the previous command's reply arriving late. Drop it and ask
+                # once more before declaring failure.
+                self._buf = bytearray()
+                self.drain()
+                return self.command(op, data, checksum, timeout, _retry=False)
+            raise FirmwareError(t("fw_esp_mismatch", got=f"{r_op:02X}", want=f"{op:02X}",
+                                  default=f"unexpected response (got op {r_op:#02x}, "
+                                          f"wanted {op:#02x})"))
         body = resp[8:8 + size]
         status = resp[8 + size] if len(resp) > 8 + size else 0
         if status:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import struct
+import time
 
 from .cbor_mini import loads
 from .pk.core.log import get_logger
@@ -41,9 +42,47 @@ CAP_WINK = 0x01
 CAP_CBOR = 0x04
 CAP_NMSG = 0x08
 
+# CTAPHID_ERROR payload carries one of these. Reporting "unexpected response
+# command 0xBF" (which is what fell out before) threw away the only byte that
+# says what actually went wrong.
+HID_ERRORS = {
+    0x01: "INVALID_CMD",
+    0x02: "INVALID_PAR",
+    0x03: "INVALID_LEN",
+    0x04: "INVALID_SEQ",
+    0x05: "MSG_TIMEOUT",
+    0x06: "CHANNEL_BUSY",
+    0x0A: "LOCK_REQUIRED",
+    0x7F: "OTHER",
+}
+
+# CTAPHID_KEEPALIVE status byte - what the device is waiting for.
+KA_PROCESSING = 0x01
+KA_UPNEEDED = 0x02
+
+# CTAP2 status codes that a cancelled request can come back with.
+CTAP2_OK = 0x00
+CTAP2_ERR_KEEPALIVE_CANCEL = 0x2D
+
 
 class CTAPError(Exception):
     pass
+
+
+_UNSET = object()      # distinguishes "not given" from a deliberate None
+
+
+class CTAPHidError(CTAPError):
+    """The transport answered with CTAPHID_ERROR instead of the command."""
+
+    def __init__(self, code: int):
+        self.code = code
+        name = HID_ERRORS.get(code, "UNKNOWN")
+        super().__init__(f"CTAPHID error 0x{code:02X} ({name})")
+
+
+class CTAPCancel(CTAPError):
+    """The request was cancelled (by us timing out, or the user giving up)."""
 
 
 class CTAPHIDTransport:
@@ -83,46 +122,113 @@ class CTAPHIDTransport:
             rest = rest[self.packet_size - 5:]
             seq += 1
 
-    def _read_frame(self, timeout: int = 3000):
+    def _read_frame(self, deadline: float, expect_cid: int = None):
         """Read one CTAPHID response. Returns (cmd, payload).
 
         Per spec BCNTH/BCNTL counts the data only - the command byte lives at
         offset 4 of the INIT packet and is NOT part of the counted length.
+
+        `deadline` is absolute: it bounds the WHOLE exchange, not this one
+        read. A device that keeps sending KEEPALIVE (waiting for a touch) used
+        to reset the timeout on every report and hang forever.
+
+        `expect_cid=None` accepts any channel, which is what CTAPHID_INIT
+        needs: it is sent on the broadcast CID and answered with a newly
+        allocated one.
         """
-        first = self._conn.read(length=self.packet_size, timeout=timeout)
+        first = self._read(self.packet_size, deadline)
         if len(first) < 7:
             raise CTAPError("short HID report")
+        cid = struct.unpack(">I", bytes(first[0:4]))[0]
+        if expect_cid is None:
+            return_cid = cid
+        else:
+            return_cid = expect_cid
+        if cid != return_cid:
+            # A different authenticator (or a stale frame from a previous
+            # session) answering on the same endpoint.
+            raise CTAPError(f"HID response from another channel "
+                            f"(0x{cid:08X}, expected 0x{self.cid:08X})")
         resp_cmd = first[4]                        # 0x86 INIT, 0x90 CBOR, 0xBB KEEPALIVE
         bcnt = (first[5] << 8) | first[6]
         data = bytearray(first[7:])
         seq = 0
         while len(data) < bcnt:
-            cont = self._conn.read(length=self.packet_size, timeout=timeout)
+            cont = self._read(self.packet_size, deadline)
             if len(cont) < 5:
                 raise CTAPError("short continuation report")
+            if struct.unpack(">I", bytes(cont[0:4]))[0] != return_cid:
+                raise CTAPError("continuation report from another channel")
             if cont[4] != seq:
                 raise CTAPError(f"continuation sequence mismatch (got {cont[4]}, want {seq})")
             data += cont[5:]
             seq = (seq + 1) & 0x7F
         return resp_cmd, bytes(data[:bcnt])
 
-    def _exchange(self, cmd: int, payload: bytes = b"", timeout: int = 3000):
+    def _read(self, length: int, deadline: float) -> bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CTAPError("timed out waiting for the device")
+        return self._conn.read(length=length, timeout=int(remaining * 1000))
+
+    def _exchange(self, cmd: int, payload: bytes = b"", timeout: int = 3000,
+                  on_keepalive=None, cancel_on_timeout: bool = True,
+                  expect_cid: int = _UNSET):
+        """Send one command and wait for its response.
+
+        Mirrors python-fido2's CtapHidDevice.call: KEEPALIVE keeps us waiting
+        but does NOT extend the deadline, ERROR carries a real error code, and
+        running out of time sends CTAPHID_CANCEL so the authenticator stops
+        waiting for a touch that will never come.
+
+        `expect_cid` defaults to the current channel; pass None to accept any
+        (only CTAPHID_INIT needs that).
+        """
+        if expect_cid is _UNSET:
+            expect_cid = self.cid
+        deadline = time.monotonic() + max(timeout, 100) / 1000.0
         self._write_frame(self.cid, cmd, payload)
+        last_ka = None
         while True:
-            resp_cmd, data = self._read_frame(timeout=timeout)
+            try:
+                resp_cmd, data = self._read_frame(deadline, expect_cid)
+            except CTAPError:
+                if cancel_on_timeout:
+                    self._cancel()
+                raise
             if resp_cmd == CTAPHID_KEEPALIVE:
+                status = data[0] if data else 0
+                if on_keepalive is not None and status != last_ka:
+                    last_ka = status
+                    on_keepalive(status)
                 continue                       # device still busy, keep waiting
+            if resp_cmd == CTAPHID_ERROR:
+                raise CTAPHidError(data[0] if data else 0x7F)
             if resp_cmd != cmd:
                 raise CTAPError(f"unexpected response command 0x{resp_cmd:02X}")
             return data
+
+    def _cancel(self):
+        """Tell the authenticator to drop the pending request."""
+        try:
+            self._write_frame(self.cid, CTAPHID_CANCEL, b"")
+        except Exception as e:
+            logger.debug("sending CTAPHID_CANCEL failed: " + str(e))
 
     # ------------------------------------------------------- public commands
 
     def init(self) -> dict:
         nonce = os.urandom(8)
-        resp = self._exchange(CTAPHID_INIT, nonce)
+        # INIT goes out on the broadcast channel and is answered with a fresh
+        # CID, so this one exchange cannot insist on the current channel.
+        resp = self._exchange(CTAPHID_INIT, nonce, expect_cid=None)
         if len(resp) < 17:
             raise CTAPError("truncated CTAPHID_INIT response")
+        if resp[0:8] != nonce:
+            # Someone else answered, or we read a stale frame: adopting that
+            # CID would make every later command fail in a confusing way.
+            raise CTAPError("CTAPHID_INIT echoed a different nonce "
+                            "(another device answered)")
         self.cid = struct.unpack(">I", resp[8:12])[0]
         self._init_response = {
             "nonce_echo": resp[0:8],
@@ -141,29 +247,36 @@ class CTAPHIDTransport:
                 "nmsg": bool(caps & CAP_NMSG)}
 
     def wink(self) -> bool:
-        self._exchange(CTAPHID_WINK, b"", timeout=3000)
+        # WINK is a plain command with no touch prompt, so there is nothing to
+        # cancel and nothing to report beyond the timeout itself.
+        self._exchange(CTAPHID_WINK, b"", timeout=3000, cancel_on_timeout=False)
         return True
 
-    def cbor(self, ctap_cmd: int, payload: bytes = b"", timeout: int = 5000):
+    def cbor(self, ctap_cmd: int, payload: bytes = b"", timeout: int = 5000,
+             on_keepalive=None):
         """Send a CTAP2 command; returns (status_byte, response_bytes)."""
-        resp = self._exchange(CTAPHID_CBOR, bytes([ctap_cmd]) + payload, timeout=timeout)
+        resp = self._exchange(CTAPHID_CBOR, bytes([ctap_cmd]) + payload,
+                              timeout=timeout, on_keepalive=on_keepalive)
         if not resp:
             raise CTAPError("empty CTAP2 response")
         return resp[0], resp[1:]
 
-    def get_info(self) -> dict:
-        status, data = self.cbor(CTAP2_GET_INFO)
-        if status != 0x00:
+    def get_info(self, on_keepalive=None) -> dict:
+        status, data = self.cbor(CTAP2_GET_INFO, on_keepalive=on_keepalive)
+        if status != CTAP2_OK:
             raise CTAPError(f"authenticatorGetInfo failed, status 0x{status:02X}")
         info = loads(data)
         if not isinstance(info, dict):
             raise CTAPError("authenticatorGetInfo did not return a CBOR map")
         return info
 
-    def reset(self) -> bool:
+    def reset(self, on_keepalive=None) -> bool:
         """Factory reset of the FIDO applet. Needs physical touch on the key."""
-        status, _ = self.cbor(CTAP2_RESET, b"", timeout=30000)
-        return status == 0x00
+        status, _ = self.cbor(CTAP2_RESET, b"", timeout=30000,
+                              on_keepalive=on_keepalive)
+        if status == CTAP2_ERR_KEEPALIVE_CANCEL:
+            raise CTAPCancel("the device stopped waiting for your touch")
+        return status == CTAP2_OK
 
     # -------------------------------------------------------- lifecycle
 

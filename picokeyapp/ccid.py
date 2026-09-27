@@ -57,6 +57,12 @@ class CCIDTransport:
                 break
             if len(chunk) < maxpkt:         # short packet == end of transfer
                 break
+        if need is not None and len(buf) > need:
+            # Anything past the declared frame belongs to an earlier command;
+            # keeping it would desync every exchange after this one.
+            logger.debug("dropping %d stray byte(s) after the CCID frame",
+                         len(buf) - need)
+            buf = buf[:need]
         return bytes(buf)
 
     # ---------------------------------------------------------- card-ish API

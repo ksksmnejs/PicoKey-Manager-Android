@@ -112,6 +112,9 @@ STRINGS = {
     "msg_reading": {"zh": "读取中…", "en": "Reading…"},
     "msg_writing_phy": {"zh": "写入 PHY…", "en": "Writing PHY…"},
     "msg_reading_phy": {"zh": "读取 PHY…", "en": "Reading PHY…"},
+    "ka_processing": {"zh": "设备处理中…", "en": "Device is processing…"},
+    "ka_upneeded": {"zh": "请触摸开发板上的按键", "en": "Touch the button on the board"},
+    "ka_unknown": {"zh": "设备繁忙（状态 %s）", "en": "Device busy (status %s)"},
     "msg_winking": {"zh": "发送 WINK…", "en": "Sending WINK…"},
     "msg_rebooting": {"zh": "重启中…", "en": "Rebooting…"},
     "msg_phy_read": {
@@ -135,7 +138,8 @@ STRINGS = {
     "msg_reconnect_needed": {"zh": "请重新读取或重新连接", "en": "Re-read or reconnect"},
 
     # ---------------------------------------------------------------- errors
-    "err_no_apdu": {"zh": "当前通道不支持 APDU（这是 FIDO HID 通道）", "en": "This channel has no APDU support (it is the FIDO HID channel)"},
+    "err_no_apdu": {"zh": "这个操作需要 CCID / 智能卡通道，当前连的是 FIDO HID 通道。请回到扫描页，选 CCID（智能卡）通道连接。", "en": "This needs the CCID / smart-card channel, but you are on the FIDO HID one. Go back to the scan page and pick the CCID channel."},
+    "err_no_ctap": {"zh": "WINK 需要 FIDO HID 通道，当前连的是 CCID / 智能卡通道。请回到扫描页，选 FIDO HID 通道连接。", "en": "WINK needs the FIDO HID channel, but you are on the CCID one. Go back to the scan page and pick the FIDO HID channel."},
     "err_phy_read": {"zh": "读取 PHY 失败", "en": "Reading PHY failed"},
     "err_not_android": {"zh": "USB Host 只在安卓真机上可用（当前：{plat}）", "en": "USB host only works on a real Android device (current: {plat})"},
     "err_permission_denied": {
@@ -145,7 +149,7 @@ STRINGS = {
     "err_no_permission": {"zh": "UsbManager 仍然没有权限", "en": "UsbManager still has no permission"},
     "err_not_fido": {"zh": "这个 HID 接口不像 FIDO 设备（报告描述符里没有 usage page 0xF1D0）", "en": "This HID interface does not look like FIDO (no 0xF1D0 usage page in the report descriptor)"},
     "err_claim_failed": {"zh": "接口占用失败（多半是内核 HID 驱动占着）", "en": "Could not claim the interface (a kernel HID driver probably holds it)"},
-    "err_open_device": {"zh": "无法打开设备（没有权限或设备忙）", "en": "Cannot open the device (no permission or device busy)"},
+    "err_open_device": {"zh": "打不开设备：USB 权限没给，或设备被别的 App 占用。确认弹窗点了「允许」；若之前拒过，需卸载重装 App（或到系统设置撤销 USB 权限）后重插。", "en": "Cannot open the device: USB permission denied, or another app holds it. Make sure you tapped Allow; if you denied it earlier, reinstall the app (or revoke the USB permission in system settings) and replug."},
     "err_no_endpoints": {"zh": "这个接口没有可用的 IN/OUT 端点", "en": "This interface has no usable IN/OUT endpoints"},
 
     # ------------------------------------------------------------- self-test
@@ -153,6 +157,7 @@ STRINGS = {
     "selftest_cbor": {"zh": "CBOR 编解码", "en": "CBOR codec"},
     "selftest_ccid": {"zh": "CCID 组帧 / APDU", "en": "CCID framing / APDU"},
     "selftest_ctap": {"zh": "CTAPHID / FIDO", "en": "CTAPHID / FIDO"},
+    "selftest_errors": {"zh": "—— 错误处理 ——", "en": "—— Error handling ——"},
     "selftest_passed": {
         "zh": "全部通过：协议层行为与上游一致。",
         "en": "All checks passed: protocol behaviour matches upstream.",
@@ -294,7 +299,7 @@ STRINGS.update({
     "fw_esp_nosync": {"zh": "bootloader 没有响应，板子在下载模式吗？", "en": "bootloader did not answer - is the board in download mode?"},
     "fw_esp_timeout": {"zh": "bootloader 超时未响应", "en": "no response from the bootloader"},
     "fw_esp_short": {"zh": "响应被截断", "en": "truncated response"},
-    "fw_esp_mismatch": {"zh": "响应不匹配", "en": "unexpected response"},
+    "fw_esp_mismatch": {"zh": "响应不匹配（收到 op {got}，期望 {want}）—— 已自动重同步一次仍失败", "en": "unexpected response (got op {got}, wanted {want}) - still wrong after one resync"},
     "fw_esp_status": {"zh": "bootloader 返回状态 {code}", "en": "bootloader returned status {code}"},
     "fw_saf_failed": {"zh": "打不开文件管理器：{err}", "en": "could not open the file manager: {err}"},
     "fw_no_bootloader": {"zh": "没找到处于下载模式的设备", "en": "no device in download mode found"},

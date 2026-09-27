@@ -10,8 +10,13 @@ Run from the shell:  python -m picokeyapp.selftest
 from __future__ import annotations
 
 import struct
+import time
 
 from .i18n import t
+
+
+def _now():
+    return time.monotonic()
 
 
 # --------------------------------------------------------------------- fakes
@@ -346,6 +351,218 @@ def run() -> str:
     lines.append(_check("getInfo aaguid", described["aaguid"] == fake_fido.aaguid.hex()))
     lines.append(_check("getInfo options", described["options"].get("rk") is True))
     hid.close()
+
+    # 4. error handling --------------------------------------------------
+    # These are the failures that used to reach the user as a bare ValueError
+    # ("not enough values to unpack") or as a status word invented from
+    # whatever happened to be sitting in the buffer.
+    lines.append("")
+    lines.append(t("selftest_errors").strip("— ") + ":")
+
+    from .pk.ICCD import Icc_Error_Short_Frame, RDR_to_PC_DataBlock
+    from .pk.APDU import APDUResponse
+    from . import flasher
+
+    # a) fewer bytes than the 10-byte CCID header
+    try:
+        RDR_to_PC_DataBlock(b"\x80\x00\x00\x00\x00")(0)
+        lines.append(_check("short CCID frame -> named error", False, "no exception"))
+    except Icc_Error_Short_Frame as e:
+        lines.append(_check("short CCID frame -> named error",
+                            "truncated" in str(e), str(e)))
+    except Exception as e:
+        lines.append(_check("short CCID frame -> named error", False,
+                            type(e).__name__ + ": " + str(e)))
+
+    # b) no SW bytes at all: must not invent a status word.
+    #    The response has to echo the sequence number from the request's byte 6.
+    def _echo_seq(msg_type, body=b""):
+        return lambda d: _ccid_response(msg_type, body, d[6] if len(d) > 6 else 0)
+
+    empty = ccid.CCIDTransport(FakeConnection(_echo_seq(0x80)),
+                               label="empty", auto_power=False)
+    try:
+        empty.transmit([0x00, 0xA4, 0x04, 0x04])
+        lines.append(_check("missing SW -> named error", False, "no exception"))
+    except IOError as e:
+        lines.append(_check("missing SW -> named error", "truncated" in str(e), str(e)))
+    except Exception as e:
+        lines.append(_check("missing SW -> named error", False,
+                            type(e).__name__ + ": " + str(e)))
+
+    # c) bytes past the declared frame end must not leak into the next read
+    trailing = ccid.CCIDTransport(
+        FakeConnection(lambda d: _echo_seq(0x81)(d) + b"\xAA" * 7),
+        label="trailing", auto_power=False)
+    frame = trailing.exchange(bytes([0x63]) + b"\x00" * 9)
+    lines.append(_check("stray bytes after the frame are dropped",
+                        len(frame) == 10, f"{len(frame)} bytes"))
+
+    # d) a status word should explain itself
+    lines.append(_check("SW 6A86 explains itself",
+                        "P1/P2" in str(APDUResponse(0x6A, 0x86)),
+                        str(APDUResponse(0x6A, 0x86))))
+
+    # e) a late reply to the previous command: drop it, ask again, succeed
+    class LateConn:
+        """Answers the first read with a stale frame, then behaves."""
+
+        def __init__(self, op):
+            self.op = op
+            self.written = []
+            self._pending = [flasher.slip_encode(
+                struct.pack("<BBHI", 0x01, 0x08, 0, 0))]
+
+        def write(self, data, timeout=None):
+            self.written.append(bytes(data))
+            self._pending.append(flasher.slip_encode(
+                struct.pack("<BBHI", 0x01, self.op, 0, 0)))
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            if not self._pending:
+                raise IOError("nothing to read")
+            return self._pending.pop(0)
+
+    late = LateConn(flasher.OP_FLASH_END)
+    flasher.EspLoader(late).command(flasher.OP_FLASH_END, b"", 0, timeout=200)
+    lines.append(_check("stale frame -> resync and retry", len(late.written) == 2,
+                        f"{len(late.written)} write(s)"))
+
+    # f) CTAPHID: a device that only ever sends KEEPALIVE must not hang us
+    class NeverAnswers:
+        ep_in = _EP()
+        ep_out = _EP()
+
+        def __init__(self):
+            self.sent = []
+
+        def write(self, data, timeout=None):
+            self.sent.append(bytes(data))
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            f = bytearray(64)
+            f[0:4] = struct.pack(">I", 0x11223344)
+            f[4] = ctap.CTAPHID_KEEPALIVE
+            f[5], f[6] = 0, 1
+            f[7] = 0x02                       # waiting for the user to touch
+            return bytes(f)
+
+        def close(self):
+            pass
+
+    stalled = NeverAnswers()
+    hid_stall = ctap.CTAPHIDTransport(stalled)
+    hid_stall.cid = 0x11223344
+    seen = []
+    started = _now()
+    try:
+        hid_stall.cbor(ctap.CTAP2_GET_INFO, b"", timeout=700,
+                       on_keepalive=seen.append)
+        lines.append(_check("KEEPALIVE loop respects the deadline", False,
+                            "returned instead of timing out"))
+    except ctap.CTAPError:
+        elapsed = _now() - started
+        lines.append(_check("KEEPALIVE loop respects the deadline",
+                            elapsed < 5, f"{elapsed:.1f}s for a 0.7s timeout"))
+    lines.append(_check("touch prompt reaches the caller", seen == [0x02], str(seen)))
+    lines.append(_check("timeout sends CTAPHID_CANCEL",
+                        any(d[4] == ctap.CTAPHID_CANCEL for d in stalled.sent)))
+
+    # g) CTAPHID_ERROR used to surface as "unexpected response command 0xBF",
+    #    which threw away the one byte saying what went wrong.
+    class ErrorOnly:
+        ep_in = _EP()
+        ep_out = _EP()
+
+        def __init__(self, code, cid=0x11223344):
+            self.code = code
+            self.cid = cid
+
+        def write(self, data, timeout=None):
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            f = bytearray(64)
+            f[0:4] = struct.pack(">I", self.cid)
+            f[4] = ctap.CTAPHID_ERROR
+            f[5], f[6] = 0, 1
+            f[7] = self.code
+            return bytes(f)
+
+        def close(self):
+            pass
+
+    try:
+        err_dev = ctap.CTAPHIDTransport(ErrorOnly(0x06))
+        err_dev.cid = 0x11223344
+        err_dev.get_info()
+        lines.append(_check("CTAPHID_ERROR reports its code", False, "no exception"))
+    except ctap.CTAPHidError as e:
+        lines.append(_check("CTAPHID_ERROR reports its code",
+                            "CHANNEL_BUSY" in str(e), str(e)))
+
+    # h) a frame from another channel must not be taken as our answer
+    try:
+        foreign = ctap.CTAPHIDTransport(ErrorOnly(0x06, cid=0xDEADBEEF))
+        foreign.cid = 0x11223344
+        foreign._read_frame(_now() + 1, expect_cid=0x11223344)
+        lines.append(_check("foreign CID rejected", False, "accepted"))
+    except ctap.CTAPError as e:
+        lines.append(_check("foreign CID rejected", "another channel" in str(e), str(e)))
+
+    # i) INIT nonce mismatch: do not adopt a CID from a stranger
+    class WrongNonce:
+        ep_in = _EP()
+        ep_out = _EP()
+
+        def write(self, data, timeout=None):
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            body = bytearray(17)
+            body[8:12] = struct.pack(">I", 0x11223344)
+            f = bytearray(64)
+            f[0:4] = struct.pack(">I", 0x11223344)
+            f[4] = ctap.CTAPHID_INIT
+            f[5], f[6] = 0, 17
+            f[7:7 + 17] = body
+            return bytes(f)
+
+        def close(self):
+            pass
+
+    try:
+        ctap.CTAPHIDTransport(WrongNonce()).init()
+        lines.append(_check("INIT nonce mismatch rejected", False, "accepted"))
+    except ctap.CTAPError as e:
+        lines.append(_check("INIT nonce mismatch rejected",
+                            "nonce" in str(e), str(e)))
+
+    # f2) still wrong after the resync: say which ops were involved
+    class AlwaysWrong:
+        def __init__(self):
+            self.written = []
+
+        def write(self, data, timeout=None):
+            self.written.append(bytes(data))
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            return flasher.slip_encode(struct.pack("<BBHI", 0x01, 0x08, 0, 0))
+
+    try:
+        flasher.EspLoader(AlwaysWrong()).command(flasher.OP_FLASH_END, b"", 0,
+                                                 timeout=200)
+        lines.append(_check("mismatch after resync names both ops", False,
+                            "no exception"))
+    except flasher.FirmwareError as e:
+        lines.append(_check("mismatch after resync names both ops",
+                            "08" in str(e) and "04" in str(e), str(e)))
+    except Exception as e:
+        lines.append(_check("mismatch after resync names both ops", False,
+                            type(e).__name__ + ": " + str(e)))
 
     lines.append("")
     lines.append(t("selftest_passed"))
