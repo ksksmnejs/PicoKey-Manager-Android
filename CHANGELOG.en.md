@@ -105,6 +105,21 @@ If the build fails the job stops early and no version number is consumed.
 - Fixed "could not read the selected file": reads via a file descriptor now,
   no longer relying on Java byte arrays; failures show the actual reason
 
+- **No way to tell whether user presence (the physical press) is actually
+  enforced**: the device screen gains **"Test user presence (button)"**, which
+  sends CTAP_SELECTION and times it. An instant answer means the device never
+  waited for a press; an answer that arrives after a pause means it genuinely is
+- **The UP state was invisible**: added a "User presence (UP)" line reading
+  `options.up` from getInfo. When the device does not report it, the text points
+  at the test button instead of showing a meaningless "not reported"
+- **The "Confirm button GPIO" field had no explanation**: it now says that most
+  Pico boards ship with nothing but BOOTSEL, and that with no button soldered —
+  or a GPIO that does not match the wiring — a PIN alone is enough and no touch
+  is requested
+- **Nothing was shown while waiting for a press** (the presence test reuses
+  this): the CTAPHID KEEPALIVE callback now drives "Touch the button on the
+  board"
+
 ### Changed
 
 - **Removed firmware fetching from GitHub / URL** - the `INTERNET` permission is

@@ -451,6 +451,8 @@ BoxLayout:
                     id: up_btn
                     multiline: False
                     input_filter: 'int'
+            InfoLabel:
+                text: '@@hint_up_btn@@'
 
             SectionLabel:
                 text: '@@sec_opts@@'
@@ -556,6 +558,9 @@ BoxLayout:
             MenuButton:
                 text: '@@btn_wink@@'
                 on_release: app.wink()
+            MenuButton:
+                text: '@@btn_test_presence@@'
+                on_release: app.test_presence()
             MenuButton:
                 text: '@@btn_reboot@@'
                 on_release: app.reboot(False)
@@ -1222,11 +1227,24 @@ class PicoKeyApp(App):
             except Exception:
                 caps = {}
         dev_ver = init.get("device_version") or (0, 0, 0)
+        # `options.up` from authenticatorGetInfo is the device telling us
+        # whether it will insist on a physical press. When it is false (or
+        # missing) a PIN alone satisfies every request, which is the usual
+        # reason people never see the "touch your key" prompt.
+        opts = (self._dev.get("info") or {}).get("options") or {}
+        up = opts.get("up")
+        if up is True:
+            up_text = i18n.t("up_on")
+        elif up is False:
+            up_text = i18n.t("up_off")
+        else:
+            up_text = i18n.t("up_unknown")
         return "\n".join([
             f"{i18n.t('lbl_channel')}：FIDO HID (CTAPHID)",
             f"{i18n.t('lbl_protocol')}：{init.get('protocol_version')}",
             f"{i18n.t('lbl_device_ver')}：{dev_ver}",
             f"{i18n.t('lbl_caps')}：wink={caps.get('wink')} cbor={caps.get('cbor')}",
+            f"{i18n.t('lbl_up')}：{up_text}",
             f"{i18n.t('lbl_cid')}：0x{init.get('cid', 0):08X}",
         ])
 
@@ -1482,6 +1500,33 @@ class PicoKeyApp(App):
             self._done(i18n.t("msg_wink_sent"))
 
         self._worker(work, done, i18n.t("msg_winking"))
+
+    def test_presence(self):
+        """Ask the device to confirm user presence and time how long it took.
+
+        A board with a real button on the configured GPIO will sit there and
+        send KEEPALIVE until it is pressed. One without will answer straight
+        away, and that instant answer is the clearest evidence that presence is
+        not being enforced.
+        """
+        def work():
+            if self.kind != "ctap":
+                raise UserError(i18n.t("err_no_ctap"))
+            try:
+                return self.transport.selection(
+                    timeout=30000, on_keepalive=self._on_keepalive)
+            except ctap.CTAPError as exc:
+                raise UserError(i18n.t("msg_presence_failed", err=exc))
+
+        def done(elapsed):
+            if elapsed < 1.0:
+                self._done(i18n.t("msg_presence_instant") % elapsed)
+                self.log(i18n.t("msg_presence_instant") % elapsed)
+            else:
+                self._done(i18n.t("msg_presence_ok") % elapsed)
+                self.log("presence confirmed in %.1fs" % elapsed)
+
+        self._worker(work, done, i18n.t("msg_testing_presence"))
 
     def reboot(self, bootsel: bool):
         def work():

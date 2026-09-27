@@ -222,6 +222,13 @@ run, identify the file without flashing and read the log at each step.
 - The three firmwares (HSM / FIDO / OpenPGP) **cannot coexist**; switching
   requires flashing Pico Nuke to wipe first. Dedicate one board per purpose
   rather than switching back and forth.
+- **"User presence" (the physical press) only works if a button is actually
+  soldered to the board.** Most Pico boards ship with nothing but BOOTSEL, no
+  user button. With no button fitted — or with a "Confirm button GPIO" that does
+  not match the wiring — registering a passkey succeeds on the PIN alone and
+  never asks for a touch. Use **"Test user presence (button)"** on the device
+  screen to measure it: an instant answer means it never waited for you, an
+  answer that only arrives after a pause means presence is genuinely enforced.
 - The signing key `tools/debug.keystore.b64` is public in this repo, so every
   automated build signs identically and updates install cleanly. The trade-off:
   anyone could sign an APK with the same package name using it. A debug key is
