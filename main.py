@@ -50,7 +50,7 @@ from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.utils import platform
 
-from picokeyapp import detect, flasher, fonts, i18n, usbhost
+from picokeyapp import ctap, detect, flasher, fonts, i18n, usbhost
 from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
 
 _PLACEHOLDER = re.compile(r"@@([a-z_0-9]+)@@")
@@ -612,6 +612,15 @@ BoxLayout:
 """
 
 
+class UserError(Exception):
+    """An expected, explainable failure - wrong channel, missing permission.
+
+    These carry the advice the user needs in their own message. Printing a
+    stack trace under them just buries that advice under several screens of
+    frames that are identical every time.
+    """
+
+
 class ScanScreen(Screen):
     pass
 
@@ -1085,10 +1094,26 @@ class PicoKeyApp(App):
         except Exception as exc:
             self._fail(exc, traceback.format_exc())
 
+    def _on_keepalive(self, status: int):
+        """Called from the worker thread while the device keeps us waiting.
+
+        A FIDO operation that needs a button press answers with KEEPALIVE every
+        100ms instead of the real response. Without this the UI just sits on
+        "读取中…" and people assume it has hung and pull the cable.
+        """
+        if status == ctap.KA_UPNEEDED:
+            text = i18n.t("ka_upneeded")
+        elif status == ctap.KA_PROCESSING:
+            text = i18n.t("ka_processing")
+        else:
+            text = i18n.t("ka_unknown", status=f"0x{status:02X}")
+        Clock.schedule_once(lambda dt: setattr(self, "status_text", text))
+
     def _fail(self, exc, tb):
         self.busy = False
         self.log(f"[error] {exc}")
-        self.log(tb)
+        if not isinstance(exc, UserError):
+            self.log(tb)
         try:
             self.status_text = i18n.t("msg_failed", err=exc)
         except Exception:
@@ -1143,7 +1168,7 @@ class PicoKeyApp(App):
             transport.init()
             info = {}
             try:
-                info = transport.get_info()
+                info = transport.get_info(on_keepalive=self._on_keepalive)
             except Exception as e:
                 self.log(i18n.t("msg_getinfo_failed", err=e))
             return {"kind": "ctap", "init": transport._init_response, "info": info}
@@ -1209,7 +1234,7 @@ class PicoKeyApp(App):
 
     def _require_apdu(self):
         if self.kind != "apdu" or self.pk is None:
-            raise RuntimeError(i18n.t("err_no_apdu"))
+            raise UserError(i18n.t("err_no_apdu"))
         return self.pk
 
     def refresh(self):
@@ -1447,7 +1472,9 @@ class PicoKeyApp(App):
     def wink(self):
         def work():
             if self.kind != "ctap":
-                raise RuntimeError(i18n.t("err_no_apdu"))
+                # Was err_no_apdu before, which told CCID users they were on
+                # the FIDO HID channel - the exact opposite of the truth.
+                raise UserError(i18n.t("err_no_ctap"))
             self.transport.wink()
             return True
 

@@ -39,6 +39,51 @@ If the build fails the job stops early and no version number is consumed.
 
 ---
 
+## [v0.2.2] - 2026-09-27
+
+### Fixed
+
+- **Short CCID frames reported "not enough values to unpack"**: the length is
+  checked before parsing, so you now get `truncated CCID response: got N byte(s),
+  need at least 10`
+- **A response with no SW bytes no longer invents a status word**: too-short
+  frames raise, instead of reading SW1/SW2 out of whatever was in the buffer
+- **Stray bytes past the end of a CCID frame poisoned the next exchange**: the
+  buffer is trimmed to dwLength
+- **WINK's error message said the opposite of the truth**: tapping WINK on the
+  CCID channel claimed you were on the FIDO HID one. It now says which channel
+  WINK needs and which one you are on
+- **ESP32 flashing "unexpected response"**: a late reply to the previous command
+  now triggers one drain-and-retry; if it still mismatches, both the received
+  and the expected op are reported
+- **Expected failures no longer print a stack trace**: explainable errors such as
+  a wrong channel show one line, not a dozen frames
+
+### Changed
+
+- Status words carry a readable explanation, e.g. `SW:6A86 — incorrect P1/P2`
+- "Cannot open the device" now includes what to check (permission dialog,
+  another app holding it, how to revoke the grant)
+
+- **The app hung whenever the device was waiting for a touch**: every CTAPHID
+  KEEPALIVE restarted the read timeout, so a device sending them regularly never
+  timed out. The whole exchange now shares one deadline, and running out of time
+  also sends CTAPHID_CANCEL so the authenticator stops waiting for a touch that
+  will never come
+- **CTAPHID_ERROR only said "unexpected response command 0xBF"**, discarding the
+  one byte that explains the problem. Real codes are now decoded, e.g.
+  `CTAPHID error 0x06 (CHANNEL_BUSY)`
+- **Response frames were not checked for their channel**: a frame from another
+  device on the bus, or left over from an earlier session, was accepted as the
+  answer to the current command. Both INIT and continuation packets now check CID
+- **INIT did not verify the echoed nonce**, so a channel allocated by a different
+  device could be adopted and every later command would fail
+- **Nothing was shown while waiting for a touch**: KEEPALIVE status was dropped.
+  The UI now says "Touch the button on the board"
+- **CCID frame checks relied on `assert`**: Python strips asserts under `-O`, so
+  after packaging the sequence-number check (and others) would silently stop
+  working and an out-of-order response could be read as valid. Now explicit
+
 ## [v0.2.1] - 2026-09-26
 
 ### Fixed
@@ -47,6 +92,16 @@ If the build fails the job stops early and no version number is consumed.
   (Storage Access Framework). The app's own directory browser was limited by
   scoped storage and listed only a few third-party app folders, so firmware
   stored anywhere else was invisible
+- **Web tool is now an ESP32-S2 / S3 firmware flasher**: implements the esptool
+  ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END) with no flasher stub uploaded.
+  The old CCID configuration features are gone - browsers block CCID, so they
+  could never have worked
+- The page now states the CCID restriction up front; secure boot / secure lock are
+  marked unavailable with a pointer to the Android app; both READMEs spell out what
+  the page can and cannot do
+- Release assets are APK-only now; `picokey-commissioner.html` is no longer attached.
+  Pages serves the web tool, two copies drift apart, and opening the downloaded file
+  over `file://` makes WebUSB fail silently
 - Fixed "could not read the selected file": reads via a file descriptor now,
   no longer relying on Java byte arrays; failures show the actual reason
 
