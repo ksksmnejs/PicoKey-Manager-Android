@@ -37,6 +37,7 @@ BROADCAST_CID = 0xFFFFFFFF
 
 CTAP2_GET_INFO = 0x04
 CTAP2_RESET = 0x07
+CTAP2_SELECTION = 0x0B
 
 CAP_WINK = 0x01
 CAP_CBOR = 0x04
@@ -269,6 +270,26 @@ class CTAPHIDTransport:
         if not isinstance(info, dict):
             raise CTAPError("authenticatorGetInfo did not return a CBOR map")
         return info
+
+    def selection(self, timeout: int = 30000, on_keepalive=None) -> float:
+        """CTAP_SELECTION: ask the authenticator to confirm user presence.
+
+        Upstream describes it as "tests for user presence": the device blinks
+        and waits for a button press, then answers CTAP2_OK. That makes it the
+        cheapest way to tell a real button from one that was never wired up -
+        and to tell "waiting for you" from "granted without asking".
+
+        Returns the seconds it took. A device that answers in a few hundred
+        milliseconds did not wait for anything, which is exactly the situation
+        behind "I only typed a PIN, no button needed".
+        """
+        started = time.monotonic()
+        status, _ = self.cbor(CTAP2_SELECTION, b"", timeout=timeout,
+                              on_keepalive=on_keepalive)
+        elapsed = time.monotonic() - started
+        if status != CTAP2_OK:
+            raise CTAPError(f"user presence not confirmed, status 0x{status:02X}")
+        return elapsed
 
     def reset(self, on_keepalive=None) -> bool:
         """Factory reset of the FIDO applet. Needs physical touch on the key."""

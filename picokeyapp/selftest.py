@@ -152,7 +152,7 @@ class FakeFidoKey:
         self.info = dumps({
             1: ["U2F_V2", "FIDO_2_0"],
             3: self.aaguid,
-            4: {"rk": True, "uv": False, "plat": False},
+            4: {"rk": True, "uv": False, "plat": False, "up": True},
             5: 1200,
             6: [1],
             9: ["usb"],
@@ -194,6 +194,8 @@ class FakeFidoKey:
             ctap_cmd, payload = data[0], data[1:]
             if ctap_cmd == 0x04:
                 return self._frame(cid, 0x90, bytes([0x00]) + self.info)
+            if ctap_cmd == 0x0B:                   # SELECTION: user presence
+                return self._frame(cid, 0x90, bytes([0x00]))
             return self._frame(cid, 0x90, bytes([0x01]))
         return self._frame(cid, 0xBF, bytes([0x01]))
 
@@ -350,6 +352,49 @@ def run() -> str:
                         str(described.get("versions"))))
     lines.append(_check("getInfo aaguid", described["aaguid"] == fake_fido.aaguid.hex()))
     lines.append(_check("getInfo options", described["options"].get("rk") is True))
+    # `options.up` is what the device claims about requiring a physical press.
+    lines.append(_check("getInfo reports user presence",
+                        described["options"].get("up") is True,
+                        str(described["options"])))
+
+    # CTAP_SELECTION is how we tell a real presence button from none at all.
+    elapsed = hid.selection()
+    lines.append(_check("selection confirms presence", elapsed >= 0,
+                        f"{elapsed * 1000:.0f} ms"))
+
+    # A board that waits for a press sends KEEPALIVE first; the elapsed time
+    # is what separates that from a device that granted presence instantly.
+    class WaitsForButton(FakeFidoKey):
+        def __init__(self):
+            super().__init__()
+            self.keepalives = 0
+
+        def __call__(self, frame):
+            data = bytes(frame)
+            if len(data) >= 5 and (data[4] & 0x7F) == 0x10:
+                ctap_cmd = data[7] if len(data) > 7 else 0
+                if ctap_cmd == 0x0B:
+                    # A device waiting for a press emits KEEPALIVE frames and
+                    # only then the real answer, all on the same transfer.
+                    cid = struct.unpack(">I", data[0:4])[0]
+                    self.keepalives = 2
+                    return (self._frame(cid, ctap.CTAPHID_KEEPALIVE,
+                                        bytes([ctap.KA_UPNEEDED])) * 2
+                            + self._frame(cid, 0x90, bytes([0x00])))
+            return super().__call__(frame)
+
+    waiting = WaitsForButton()
+    hid_wait = ctap.CTAPHIDTransport(FakeConnection(waiting))
+    hid_wait.init()
+    seen = []
+    took = hid_wait.selection(on_keepalive=seen.append)
+    lines.append(_check("selection waits through KEEPALIVE",
+                        waiting.keepalives == 2 and took >= 0,
+                        f"{waiting.keepalives} keepalive(s)"))
+    lines.append(_check("selection reports the touch prompt",
+                        seen == [ctap.KA_UPNEEDED], str(seen)))
+    hid_wait.close()
+
     hid.close()
 
     # 4. error handling --------------------------------------------------

@@ -139,7 +139,7 @@ STRINGS = {
 
     # ---------------------------------------------------------------- errors
     "err_no_apdu": {"zh": "这个操作需要 CCID / 智能卡通道，当前连的是 FIDO HID 通道。请回到扫描页，选 CCID（智能卡）通道连接。", "en": "This needs the CCID / smart-card channel, but you are on the FIDO HID one. Go back to the scan page and pick the CCID channel."},
-    "err_no_ctap": {"zh": "WINK 需要 FIDO HID 通道，当前连的是 CCID / 智能卡通道。请回到扫描页，选 FIDO HID 通道连接。", "en": "WINK needs the FIDO HID channel, but you are on the CCID one. Go back to the scan page and pick the FIDO HID channel."},
+    "err_no_ctap": {"zh": "这是 FIDO HID 通道的功能（WINK、用户存在测试），当前连的是 CCID / 智能卡通道。请回到扫描页，选 FIDO HID 通道连接。", "en": "That is a FIDO HID channel feature (WINK, user presence test), but you are on the CCID one. Go back to the scan page and pick the FIDO HID channel."},
     "err_phy_read": {"zh": "读取 PHY 失败", "en": "Reading PHY failed"},
     "err_not_android": {"zh": "USB Host 只在安卓真机上可用（当前：{plat}）", "en": "USB host only works on a real Android device (current: {plat})"},
     "err_permission_denied": {
@@ -179,6 +179,16 @@ STRINGS.update({
 
     # ------------------------------------------------------- extra PHY fields
     "field_usb_product": {"zh": "USB 产品名", "en": "USB product"},
+    "hint_up_btn": {"zh": "用于「用户存在」检测的物理按键 GPIO（如 15）。多数 Pico 板出厂没有用户按键，只有 BOOTSEL；若没焊按键或 GPIO 与实际接线不符，设备就不会要求触摸，只验证 PIN 也能通过。", "en": "GPIO of the physical button used for user-presence checks (e.g. 15). Most Pico boards ship with no user button at all, only BOOTSEL. If no button is soldered, or the GPIO does not match the wiring, the device never asks for a touch and a PIN alone is enough."},
+    "btn_test_presence": {"zh": "测试用户存在（物理按键）", "en": "Test user presence (button)"},
+    "msg_testing_presence": {"zh": "等待按键…（请触摸板子上的确认键）", "en": "Waiting for the button… (touch the confirm button)"},
+    "msg_presence_ok": {"zh": "已确认按键（用时 %.1f 秒）", "en": "Button confirmed (took %.1f s)"},
+    "msg_presence_instant": {"zh": "设备 %.2f 秒就返回了 —— 它并没有等你按键，说明用户存在检测未真正启用（无按键或 GPIO 不对）", "en": "It answered in %.2f s — it never waited for a button, so user presence is not really enforced (no button, or wrong GPIO)"},
+    "msg_presence_failed": {"zh": "用户存在检测失败：{err}。确认板子焊了物理按键，且上面的「确认按键 GPIO」与实际接线一致。", "en": "User presence failed: {err}. Make sure a physical button is soldered and the Confirm button GPIO above matches the wiring."},
+    "lbl_up": {"zh": "用户存在(UP)", "en": "User presence (UP)"},
+    "up_on": {"zh": "已启用（需要按物理按键）", "en": "Enabled (a physical press is required)"},
+    "up_off": {"zh": "未启用（无需按键，仅 PIN 即可）", "en": "Not enabled (no press needed, PIN alone suffices)"},
+    "up_unknown": {"zh": "设备未报告 —— 请用下面的「测试用户存在」按钮实测", "en": "Not reported — measure it with the Test user presence button below"},
     "field_up_btn": {"zh": "确认按键 GPIO", "en": "Confirm button GPIO"},
 
     # ----------------------------------------------------------------- OPTS
