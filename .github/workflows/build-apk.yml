@@ -356,6 +356,56 @@ jobs:
           # where WebUSB silently does nothing.
           ls -la release/
 
+      # Placing a keystore at ~/.android/debug.keystore only helps if the build
+      # actually signs with it. This step reads the certificate back out of the
+      # finished APK and compares it with the key we installed, so a build that
+      # silently used a freshly generated key is reported here instead of
+      # turning into "signature conflict" on somebody's phone.
+      - name: Verify APK signature
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          APK=$(ls release/*.apk | head -1)
+          KS="$HOME/.android/debug.keystore"
+
+          norm() { tr -d ' :' | tr 'A-F' 'a-f'; }
+
+          EXPECTED=""
+          if [ -f "$KS" ]; then
+            EXPECTED=$(keytool -list -v -keystore "$KS" -storepass android \
+                       2>/dev/null | grep -i 'SHA1:' | head -1 \
+                       | sed 's/.*SHA1: *//' | norm)
+          fi
+
+          # apksigner understands v2/v3 signatures; falling back to the v1
+          # CERT.RSA covers old-style packages.
+          ACTUAL=""
+          AS=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | head -1)
+          if [ -n "$AS" ] && [ -x "$AS" ]; then
+            ACTUAL=$("$AS" verify --print-certs "$APK" 2>/dev/null \
+                     | grep -i 'SHA1' | head -1 | sed 's/.*SHA1: *//' | norm)
+          fi
+          if [ -z "$ACTUAL" ]; then
+            ACTUAL=$(unzip -p "$APK" 'META-INF/*.RSA' 2>/dev/null \
+                     | keytool -printcert 2>/dev/null \
+                     | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+          fi
+
+          echo "APK        : $APK"
+          echo "key  SHA1  : ${EXPECTED:-<not available>}"
+          echo "apk  SHA1  : ${ACTUAL:-<could not read>}"
+
+          if [ -z "$ACTUAL" ]; then
+            echo "::warning::could not read the signing certificate from the APK."
+          elif [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::warning::The APK is NOT signed with the installed debug key."
+            echo "::warning::Gradle probably generated a fresh key, so every build"
+            echo "::warning::gets a different signature and phones report a"
+            echo "::warning::'signature conflict'. Expected $EXPECTED, got $ACTUAL."
+          elif [ -n "$EXPECTED" ]; then
+            echo "signature matches the committed debug key - updates will install"
+            echo "in place over any build made since the key was introduced."
+          fi
+
       # Kept as well: artifacts survive even if the release step is skipped or
       # fails, and they cost nothing extra.
       - name: Upload build artifact
