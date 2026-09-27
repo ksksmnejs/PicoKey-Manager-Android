@@ -33,9 +33,14 @@ on:
           - major   # 0.2.0 -> 1.0.0
           - none    # leave buildozer.spec alone
       overwrite:
-        description: 'Overwrite an existing release with this tag (default: fail instead, so old versions are kept)'
+        # On by default: the version only moves when CHANGELOG.md gains a new
+        # section, so rebuilding without editing it resolves to a tag that is
+        # already published - and refusing to clobber then fails every single
+        # run. Untick this only when you want a rebuild to stop rather than
+        # replace the APK that is already out there.
+        description: 'Replace an existing release with this tag instead of failing (untick to protect a published version)'
         type: boolean
-        default: false
+        default: true
 
 # One build at a time, and a new one cancels whatever is still running.
 #
@@ -512,19 +517,21 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             if [ "${{ inputs.overwrite }}" != "true" ]; then
-              # Refusing to clobber is deliberate: while the version stayed at
-              # 0.1.0 every run silently replaced the previous APK, so there
-              # was no way to go back to an earlier build. Raise
-              # buildozer.spec's `version` to publish a new one.
-              echo "::error::release $TAG already exists and 'overwrite' was not enabled."
-              echo "::error::Raise 'version' in buildozer.spec to publish a new version,"
-              echo "::error::or re-run with 'overwrite' ticked to replace $TAG in place."
+              # Only reached when someone deliberately unticks the box. The
+              # default is now "replace", because the version stays put unless
+              # CHANGELOG.md gains a new section, and failing every rebuild
+              # over that helps nobody.
+              echo "::error::release $TAG already exists and 'overwrite' was unticked."
+              echo "::error::Raise 'version' in buildozer.spec (or add a CHANGELOG.md"
+              echo "::error::section) to publish a new version, or leave 'overwrite'"
+              echo "::error::ticked to replace $TAG in place."
               echo ""
               echo "Releases currently published:"
               gh release list --limit 20 || true
               exit 1
             fi
             echo "release $TAG exists - replacing the built assets (overwrite enabled)"
+            echo "::warning::$TAG was already published; this build replaces its APK."
             # --clobber only overwrites same-named files; anything you added by
             # hand stays untouched.
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
