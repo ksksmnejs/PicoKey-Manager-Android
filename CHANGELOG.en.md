@@ -137,6 +137,13 @@ If the build fails the job stops early and no version number is consumed.
 - **An empty log was indistinguishable from a broken one**: a hint line is
   shown while there is nothing logged yet
 
+- **The "confirm button does nothing" verdict was misleading**: the test answers instantly and
+  the old message flatly blamed user presence for not being enabled. Two different things are
+  actually going on: with a PIN, the firmware skips the button on purpose (by design, no PHY
+  change can force it), while this test carries no PIN, so an instant answer really does mean
+  the button GPIO is wrong. Both are now stated separately, along with "BOOT is usually GPIO0"
+  and "a reboot is required after writing"
+
 ### Changed
 
 - **Removed firmware fetching from GitHub / URL** - the `INTERNET` permission is
