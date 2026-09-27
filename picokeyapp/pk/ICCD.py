@@ -60,6 +60,44 @@ class Icc_Error_Power_Off(Icc_Error_Base):
     def __init__(self, bmIccStatus):
         super().__init__(bmIccStatus)
 
+# Every RDR_to_PC frame (DataBlock, SlotStatus, ...) begins with this header:
+# bMessageType, dwLength(4), bSlot, bSeq, bStatus, bError, bReserved.
+RDR_HEADER_SIZE = 10
+
+
+class Icc_Error_Short_Frame(Icc_Error_Base):
+    """The device answered with fewer bytes than a CCID response needs.
+
+    Without this guard the slice assignment `bStatus, bError = msg[7:9]` raises
+    a bare "not enough values to unpack", which says nothing about the actual
+    cause - a truncated or empty USB transfer.
+    """
+    eCode = 0xFA
+
+    def __init__(self, length, minimum):
+        self.length = length
+        self.minimum = minimum
+        self.message = (f'truncated CCID response: got {length} byte(s), '
+                        f'need at least {minimum}')
+        Exception.__init__(self, self.message)
+
+
+class Icc_Error_Protocol(Icc_Error_Base):
+    """A structurally wrong response frame.
+
+    These checks were `assert` statements. Python drops asserts under `-O`,
+    which buildozer may well use, and that would have silently disabled the
+    sequence-number check - the one thing keeping a stale or mixed-up response
+    from being read as the answer to the current command.
+    """
+    eCode = 0xF9
+
+    def __init__(self, what):
+        self.what = what
+        self.message = f'malformed CCID response: {what}'
+        Exception.__init__(self, self.message)
+
+
 class RDR_to_PC_Base:
     bSlot = 0x00
 
@@ -68,17 +106,30 @@ class RDR_to_PC_Base:
 
     def __call__(self, bSeq):
         msg = self._msg
-        assert(msg[0] == self.bMessageType)
+        if len(msg) < RDR_HEADER_SIZE:
+            raise Icc_Error_Short_Frame(len(msg), RDR_HEADER_SIZE)
+        if (msg[0] != self.bMessageType):
+            raise Icc_Error_Protocol(
+                f'wrong message type 0x{msg[0]:02X}, '
+                f'expected 0x{self.bMessageType:02X}')
         self.dwLength = int.from_bytes(msg[1:5], 'little')
-        assert(msg[5] == self.bSlot)
-        assert(msg[6] == bSeq)
+        if (msg[5] != self.bSlot):
+            raise Icc_Error_Protocol(
+                f'wrong slot 0x{msg[5]:02X}, expected 0x{self.bSlot:02X}')
+        if (msg[6] != bSeq):
+            # The sequence number is what stops a stale response from being
+            # read as the answer to the command we just sent.
+            raise Icc_Error_Protocol(
+                f'wrong sequence number {msg[6]}, expected {bSeq}')
         bStatus, bError = msg[7:9]
         bmIccStatus = bStatus & 0x3
         bmCommandStatus = (bStatus >> 6) & 0x3
         if (bmIccStatus != 0):
             raise Icc_Error_Power_Off(bmIccStatus)
-        assert(msg[9] == 0x00)
-        assert(bmCommandStatus < 3)
+        if (msg[9] != 0x00):
+            raise Icc_Error_Protocol(f'reserved byte 9 is 0x{msg[9]:02X}, expected 0x00')
+        if (bmCommandStatus >= 3):
+            raise Icc_Error_Protocol(f'invalid command status {bmCommandStatus}')
         if (bmCommandStatus == 1):
             if (bError == 0xFE):
                 raise Icc_Error_Icc_Mute()
@@ -94,8 +145,14 @@ class RDR_to_PC_Base:
         elif (bmCommandStatus == 2):
             raise Icc_Error_Time_Extension()
         if (self.dwLength > 0):
-            assert(len(msg[10:]) == self.dwLength)
-            return msg[10:]
+            body = msg[RDR_HEADER_SIZE:]
+            if len(body) < self.dwLength:
+                raise Icc_Error_Short_Frame(len(msg),
+                                            RDR_HEADER_SIZE + self.dwLength)
+            # Trim to dwLength: trailing bytes belong to a previous command
+            # and would desync every exchange after this one.
+            return body[:self.dwLength]
+        return b''
 
 class PC_to_RDR_IccPowerOn(PC_to_RDR_Base):
     bMessageType = 0x62
@@ -174,5 +231,10 @@ class ICCD:
         return self._exchange(PC_to_RDR_XfrBlock(apdu), RDR_to_PC_DataBlock)
 
     def transmit(self, apdu):
-        response = self.SendApdu(apdu)
+        response = self.SendApdu(apdu) or b''
+        # An R-APDU always ends with SW1 SW2. A shorter frame is truncated,
+        # and slicing it anyway would invent a status word out of whatever
+        # bytes happened to be sitting in the buffer.
+        if len(response) < 2:
+            raise Icc_Error_Short_Frame(len(response), 2)
         return response[:-2], response[-2], response[-1]
