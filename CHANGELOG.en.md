@@ -39,6 +39,39 @@ If the build fails the job stops early and no version number is consumed.
 
 ---
 
+## [v0.2.3] - 2026-09-27
+
+### Fixed
+
+- **A wrong-channel tap could only be caught after the fact**: PHY, secure boot and reboot
+  need the CCID channel, WINK and the presence test need FIDO HID, yet every button stayed
+  tappable. Tapping the wrong one reported "needs CCID, you are on HID" with a stack trace
+  behind it, which reads like a crash. Buttons that cannot work on the current channel are
+  now greyed out, and the page says which ones work and that switching happens on the scan
+  page
+
+- Firmware flashing failures (FirmwareError), CTAP errors, a refused secure-boot write and
+  bad numeric input no longer print a stack trace — their messages already say what to do
+
+- **The "confirm button does nothing" verdict was misleading**: the test answers instantly and
+  the old message flatly blamed user presence for not being enabled. Two different things are
+  actually going on: with a PIN, the firmware skips the button on purpose (by design, no PHY
+  change can force it), while this test carries no PIN, so an instant answer really does mean
+  the button GPIO is wrong. Both are now stated separately, along with "BOOT is usually GPIO0"
+  and "a reboot is required after writing"
+
+- **The LED settings carried no hint, so a wrong value was undiagnosable**: the driver has to
+  match the hardware, and choosing PICO for an addressable LED leaves it dark entirely (a plain
+  GPIO cannot produce the 800 kHz timing). A hint was added, including a reminder to enter the
+  real pin number rather than Arduino's virtual RGB_BUILTIN value of 97
+
+- **A refused secure-boot write was reported as success**: the write ignored the returned status
+  word entirely, so a board answering 6A86 was still reported as done. For an irreversible
+  OTP/eFuse burn that is the worst possible answer — it invites blind retries and hides that
+  nothing happened. The status word now names the cause (6A86 unsupported parameters / 6A82 not
+  implemented / 6982 not verified / 6D00 unsupported INS) and says plainly that nothing was
+  written, without a stack trace
+
 ## [v0.2.2] - 2026-09-27
 
 ### Fixed
@@ -136,13 +169,6 @@ If the build fails the job stops early and no version number is consumed.
   reports "not reported" with a reason instead of throwing a traceback
 - **An empty log was indistinguishable from a broken one**: a hint line is
   shown while there is nothing logged yet
-
-- **The "confirm button does nothing" verdict was misleading**: the test answers instantly and
-  the old message flatly blamed user presence for not being enabled. Two different things are
-  actually going on: with a PIN, the firmware skips the button on purpose (by design, no PHY
-  change can force it), while this test carries no PIN, so an instant answer really does mean
-  the button GPIO is wrong. Both are now stated separately, along with "BOOT is usually GPIO0"
-  and "a reboot is required after writing"
 
 ### Changed
 

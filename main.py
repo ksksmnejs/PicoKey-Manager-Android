@@ -51,7 +51,8 @@ from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.utils import platform
 
 from picokeyapp import ctap, detect, flasher, fonts, i18n, usbhost
-from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
+from picokeyapp.pk import (PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf,
+                           SecureBootError)
 
 _PLACEHOLDER = re.compile(r"@@([a-z_0-9]+)@@")
 _TOKEN = re.compile(r"\{\{([A-Z_0-9]+)\}\}")
@@ -384,6 +385,8 @@ BoxLayout:
         font_size: '15sp'
         halign: 'left'
         valign: 'top'
+    InfoLabel:
+        text: app.channel_hint
     ScrollView:
         GridLayout:
             cols: 1
@@ -393,10 +396,14 @@ BoxLayout:
             padding: 0, dp(6)
 
             MenuButton:
+                id: btn_refresh
                 text: '@@btn_refresh@@'
+                disabled: app.busy or app.blocked_apdu
                 on_release: app.refresh()
             PrimaryButton:
+                id: btn_read_phy
                 text: '@@btn_read_phy@@'
+                disabled: app.busy or app.blocked_apdu
                 on_release: app.read_phy()
 
             SectionLabel:
@@ -444,6 +451,8 @@ BoxLayout:
                     text: 'PICO'
                     font_name: 'AppFont'
                     font_size: '15sp'
+            InfoLabel:
+                text: '@@hint_led_driver@@'
             Row:
                 FieldLabel:
                     text: '@@field_up_btn@@'
@@ -519,7 +528,9 @@ BoxLayout:
                     text: 'KB'
 
             DangerButton:
+                id: btn_write_phy
                 text: '@@btn_write_phy@@'
+                disabled: app.busy or app.blocked_apdu
                 on_release: app.write_phy()
 
             SectionLabel:
@@ -534,7 +545,9 @@ BoxLayout:
                 text_size: self.size
                 color: 0.8, 0.85, 0.9, 1
             PrimaryButton:
+                id: btn_read_secure
                 text: '@@btn_read_secure@@'
+                disabled: app.busy or app.blocked_apdu
                 on_release: app.read_secure()
             Row:
                 FieldLabel:
@@ -550,22 +563,32 @@ BoxLayout:
                 height: dp(40)
                 text: '@@chk_lock@@'
             DangerButton:
+                id: btn_secure_boot
                 text: '@@btn_secure_boot@@'
+                disabled: app.busy or app.blocked_apdu
                 on_release: app.set_secure_boot()
 
             SectionLabel:
                 text: '@@sec_firmware@@'
             MenuButton:
+                id: btn_wink
                 text: '@@btn_wink@@'
+                disabled: app.busy or app.blocked_ctap
                 on_release: app.wink()
             MenuButton:
+                id: btn_test_presence
                 text: '@@btn_test_presence@@'
+                disabled: app.busy or app.blocked_ctap
                 on_release: app.test_presence()
             MenuButton:
+                id: btn_reboot
                 text: '@@btn_reboot@@'
+                disabled: app.busy or app.blocked_apdu
                 on_release: app.reboot(False)
             MenuButton:
+                id: btn_reboot_bootsel
                 text: '@@btn_reboot_bootsel@@'
+                disabled: app.busy or app.blocked_apdu
                 on_release: app.reboot(True)
             MenuButton:
                 text: '@@btn_disconnect@@'
@@ -626,6 +649,17 @@ class UserError(Exception):
     stack trace under them just buries that advice under several screens of
     frames that are identical every time.
     """
+
+
+# Failures whose message already says what to do. Printing a traceback under
+# them costs screen space and buys nothing, so _fail() skips it for these.
+QUIET_ERRORS = (
+    UserError,
+    SecureBootError,
+    flasher.FirmwareError,
+    ctap.CTAPError,
+    ValueError,          # bad numeric input in a field
+)
 
 
 class ScanScreen(Screen):
@@ -690,6 +724,14 @@ class PicoKeyApp(App):
     # a USB operation is in flight, which stops double taps from queueing a
     # second transfer on a transport that is already mid-exchange.
     busy = BooleanProperty(False)
+    # A device exposes CCID and FIDO HID as two separate channels, and each
+    # command only works on one of them. Greying out the buttons that need the
+    # channel you are not on is worth more than any error message: the failure
+    # only ever surfaced as "needs CCID, you are on HID" *after* the tap, with
+    # a stack trace behind it, and people read that as a crash.
+    blocked_apdu = BooleanProperty(False)
+    blocked_ctap = BooleanProperty(False)
+    channel_hint = StringProperty("")
     connected = False
 
     def __init__(self, **kwargs):
@@ -1145,7 +1187,10 @@ class PicoKeyApp(App):
     def _fail(self, exc, tb):
         self.busy = False
         self.log(f"[error] {exc}")
-        if not isinstance(exc, UserError):
+        # These carry their own explanation in the message. A traceback under
+        # them says nothing the message does not, and pushes the one line the
+        # user needs off the top of the log.
+        if not isinstance(exc, QUIET_ERRORS):
             self.log(tb)
         try:
             self.status_text = i18n.t("msg_failed", err=exc)
@@ -1209,6 +1254,7 @@ class PicoKeyApp(App):
         def done(result):
             self._dev = result
             self.connected = True
+            self._sync_channel()
             self._render_device_text()
             self._done(i18n.t("connected"))
             self.log(i18n.t("msg_connected_log", label=self.channel.label))
@@ -1219,6 +1265,22 @@ class PicoKeyApp(App):
         self._worker(work, done, i18n.t("connecting"))
 
     # ----------------------------------------------------- device info text
+
+    def _sync_channel(self):
+        """Grey out whatever the connected channel cannot do.
+
+        `self.kind` is set by connect(); nothing else has to remember which
+        commands belong to which channel.
+        """
+        if not self.connected:
+            self.blocked_apdu = False
+            self.blocked_ctap = False
+            self.channel_hint = ""
+            return
+        self.blocked_apdu = self.kind != "apdu"
+        self.blocked_ctap = self.kind != "ctap"
+        self.channel_hint = i18n.t(
+            "hint_channel_apdu" if self.kind == "apdu" else "hint_channel_ctap")
 
     def _render_device_text(self):
         if not self._dev:
@@ -1504,7 +1566,12 @@ class PicoKeyApp(App):
             if not 0 <= slot <= 15:
                 raise ValueError(i18n.t("err_bootkey_range"))
             lock = ids.chk_lock.state == "down"
-            self._require_apdu().secure_boot(slot, lock)
+            try:
+                self._require_apdu().secure_boot(slot, lock)
+            except SecureBootError as e:
+                # Irreversible on real hardware: never let a refusal look like
+                # success, and never bury the reason under a stack trace.
+                raise UserError(i18n.t("err_secure_write", reason=str(e)))
             return slot
 
         def done(slot):
@@ -1579,6 +1646,7 @@ class PicoKeyApp(App):
         self.transport = None
         self.kind = None
         self.connected = False
+        self._sync_channel()
         self._dev = None
         self._secure = None
         self._phy = None
