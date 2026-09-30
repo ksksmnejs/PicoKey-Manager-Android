@@ -466,7 +466,15 @@ def run() -> str:
 
     from .pk.ICCD import Icc_Error_Short_Frame, RDR_to_PC_DataBlock
     from .pk.APDU import APDUResponse
-    from .pk import PicoKey, SecureBootError
+    # From the defining module, not the package: the package __init__ is a
+    # separate file and a partial upload that leaves it behind would turn the
+    # whole self test into an ImportError instead of a report.
+    from .pk import PicoKey
+    try:
+        from .pk.PicoKey import SecureBootError
+    except ImportError:                                 # pragma: no cover
+        class SecureBootError(Exception):               # noqa: F811
+            """Fallback when PicoKey.py has not caught up with selftest.py."""
     from . import flasher
 
     # a) fewer bytes than the 10-byte CCID header
