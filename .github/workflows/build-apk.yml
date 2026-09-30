@@ -112,6 +112,7 @@ jobs:
       # key in git can store the same file base64-encoded as
       # ANDROID_KEYSTORE_BASE64 and the committed copy is simply ignored.
       - name: Install signing key
+        id: key
         env:
           KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
@@ -122,9 +123,11 @@ jobs:
           if [ -n "${KS_B64:-}" ]; then
             printf '%s' "$KS_B64" | base64 -d > "$KS"
             echo "::notice::using the keystore from ANDROID_KEYSTORE_BASE64"
+            echo "source=secret" >> "$GITHUB_OUTPUT"
           elif [ -f tools/debug.keystore.b64 ]; then
             base64 -d tools/debug.keystore.b64 > "$KS"
             echo "::notice::using the keystore committed in tools/debug.keystore.b64"
+            echo "source=committed" >> "$GITHUB_OUTPUT"
           else
             echo "::error::no signing key available"
             exit 1
@@ -364,10 +367,22 @@ jobs:
       - name: Verify APK signature
         run: |
           cd "${{ steps.locate.outputs.dir }}"
-          APK=$(ls release/*.apk | head -1)
+          set +e
+          APK=$(ls release/*.apk 2>/dev/null | head -1)
           KS="$HOME/.android/debug.keystore"
 
+          if [ -z "$APK" ]; then
+            echo "::error::no APK found in release/ - nothing to verify"
+            exit 1
+          fi
+
           norm() { tr -d ' :' | tr 'A-F' 'a-f'; }
+
+          # --- what we expect -------------------------------------------------
+          # The fingerprint of tools/debug.keystore.b64. Hardcoding it means the
+          # check still has something to compare against even if the keystore
+          # file itself cannot be read back at this point in the job.
+          COMMITTED_SHA1="5df3ab436ce806d594da56ae4f0310361116d09b"
 
           EXPECTED=""
           if [ -f "$KS" ]; then
@@ -375,36 +390,102 @@ jobs:
                        2>/dev/null | grep -i 'SHA1:' | head -1 \
                        | sed 's/.*SHA1: *//' | norm)
           fi
+          if [ -z "$EXPECTED" ] && [ "${{ steps.key.outputs.source }}" = "committed" ]; then
+            EXPECTED="$COMMITTED_SHA1"
+          fi
 
-          # apksigner understands v2/v3 signatures; falling back to the v1
-          # CERT.RSA covers old-style packages.
+          # --- what the APK actually carries -----------------------------------
+          # Several independent readers, tried in order. The previous version
+          # only knew one apksigner path and one unzip glob, and printed a bare
+          # "could not read" that gave no hint which of them had failed - which
+          # is exactly the warning that looks like a signing failure but is not.
           ACTUAL=""
-          AS=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | head -1)
-          if [ -n "$AS" ] && [ -x "$AS" ]; then
-            ACTUAL=$("$AS" verify --print-certs "$APK" 2>/dev/null \
-                     | grep -i 'SHA1' | head -1 | sed 's/.*SHA1: *//' | norm)
-          fi
+          HOW=""
+
+          # 1) apksigner: understands v1/v2/v3, so it works even when the APK
+          #    carries no META-INF certificate at all.
+          for root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" /usr/lib/android-sdk; do
+            [ -n "$root" ] || continue
+            AS=$(ls "$root"/build-tools/*/apksigner 2>/dev/null | head -1)
+            if [ -n "$AS" ] && [ -x "$AS" ]; then
+              # apksigner prints "SHA-1 digest", keytool prints "SHA1:" - the
+              # pattern must accept both. The old one only accepted the
+              # latter, so a perfectly good apksigner run still yielded
+              # nothing and the check fell through to "could not read".
+              out=$("$AS" verify --print-certs "$APK" 2>&1)
+              got=$(printf '%s' "$out" | grep -iE 'SHA-?1' | head -1 \
+                    | sed -E 's/.*SHA-?1[^:]*: *//I' | norm)
+              if [ -n "$got" ]; then ACTUAL="$got"; HOW="apksigner ($AS)"; break; fi
+              echo "apksigner produced no fingerprint; output was:"
+              printf '%s\n' "$out" | head -20
+            fi
+          done
+          [ -z "$ACTUAL" ] && command -v apksigner >/dev/null 2>&1 && {
+            got=$(apksigner verify --print-certs "$APK" 2>/dev/null \
+                  | grep -iE 'SHA-?1' | head -1 \
+                  | sed -E 's/.*SHA-?1[^:]*: *//I' | norm)
+            [ -n "$got" ] && { ACTUAL="$got"; HOW="apksigner (PATH)"; }
+          }
+
+          # 2) keytool can read a signed jar/apk directly.
           if [ -z "$ACTUAL" ]; then
-            ACTUAL=$(unzip -p "$APK" 'META-INF/*.RSA' 2>/dev/null \
-                     | keytool -printcert 2>/dev/null \
-                     | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+            got=$(keytool -printcert -jarfile "$APK" 2>/dev/null \
+                  | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+            [ -n "$got" ] && { ACTUAL="$got"; HOW="keytool -printcert -jarfile"; }
           fi
 
-          echo "APK        : $APK"
-          echo "key  SHA1  : ${EXPECTED:-<not available>}"
-          echo "apk  SHA1  : ${ACTUAL:-<could not read>}"
+          # 3) Last resort: pull the v1 certificate out of the zip ourselves.
+          #    python3 is guaranteed to be here (buildozer just ran on it), and
+          #    this works even without unzip or the Android SDK on PATH.
+          if [ -z "$ACTUAL" ]; then
+            CERT=$(python3 -c '
+          import sys, zipfile, os, tempfile
+          try:
+              z = zipfile.ZipFile(sys.argv[1])
+          except Exception as exc:
+              sys.stderr.write("zipfile failed: %s\n" % exc)
+              sys.exit(0)
+          names = [n for n in z.namelist()
+                   if n.upper().startswith("META-INF/")
+                   and n.upper().endswith((".RSA", ".DSA", ".EC"))]
+          sys.stderr.write("META-INF certs: %s\n" % (names or "none"))
+          if not names:
+              sys.exit(0)
+          fd, path = tempfile.mkstemp(suffix=".der")
+          os.close(fd)
+          with open(path, "wb") as fh:
+              fh.write(z.read(names[0]))
+          print(path)
+          ' "$APK")
+            if [ -n "$CERT" ] && [ -f "$CERT" ]; then
+              got=$(keytool -printcert -file "$CERT" 2>/dev/null \
+                    | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+              [ -n "$got" ] && { ACTUAL="$got"; HOW="python3 + keytool (v1 cert)"; }
+              rm -f "$CERT"
+            fi
+          fi
+
+          echo "APK         : $APK"
+          echo "key source  : ${{ steps.key.outputs.source }}"
+          echo "key   SHA1  : ${EXPECTED:-<not available>}"
+          echo "apk   SHA1  : ${ACTUAL:-<could not read>}"
+          echo "read via    : ${HOW:-<no tool succeeded>}"
 
           if [ -z "$ACTUAL" ]; then
             echo "::warning::could not read the signing certificate from the APK."
+            echo "::warning::This is a limitation of the checker, not proof that"
+            echo "::warning::signing is wrong - but it does mean this build was"
+            echo "::warning::NOT confirmed as updatable in place."
           elif [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
             echo "::warning::The APK is NOT signed with the installed debug key."
             echo "::warning::Gradle probably generated a fresh key, so every build"
             echo "::warning::gets a different signature and phones report a"
             echo "::warning::'signature conflict'. Expected $EXPECTED, got $ACTUAL."
           elif [ -n "$EXPECTED" ]; then
-            echo "signature matches the committed debug key - updates will install"
-            echo "in place over any build made since the key was introduced."
+            echo "signature matches the debug key - updates will install in place"
+            echo "over any build made since the key was introduced."
           fi
+          exit 0
 
       # Kept as well: artifacts survive even if the release step is skipped or
       # fails, and they cost nothing extra.
