@@ -42,6 +42,14 @@ except Exception:                       # pragma: no cover - pycvc/cryptography 
     SecureChannel = None
 
 
+class SecureBootError(Exception):
+    """The device refused a secure-boot / secure-lock write.
+
+    Carries the reason and, crucially, the fact that nothing was written —
+    so callers can say "it did not happen" instead of implying success.
+    """
+
+
 class Platform:
     """Kept as plain ints so the enum never breaks on stripped-down builds."""
     RP2040 = 0
@@ -307,9 +315,44 @@ class PicoKey:
         }
 
     def secure_boot(self, bootkey_index: int = 0, lock: bool = False):
+        """Enable secure boot / secure lock. Irreversible on real hardware.
+
+        The write used to ignore the returned status word entirely, so a board
+        that rejected the command with 6A86 was reported as "done". Next to a
+        feature that burns fuses that is the worst possible answer: it invites
+        retrying, and it hides that nothing happened at all.
+        """
         self.select_applet()
         data = [bootkey_index & 0xFF, 1 if lock else 0]
-        self.send(0x1C, cla=0x80, p1=0x02, data=data)
+        try:
+            resp, sw = self.send(0x1C, cla=0x80, p1=0x02, data=data)
+        except APDUResponse as e:
+            # send() raises on any non-9000 status; recover the word so the
+            # reason can be named instead of re-raised as a bare status.
+            raise SecureBootError(self._secure_sw_hint(e.sw))
+        except Exception as e:
+            raise SecureBootError(
+                f"the device refused this command before answering: {e}")
+        if sw != 0x9000:
+            raise SecureBootError(self._secure_sw_hint(sw))
+        return bytes(resp)
+
+    @staticmethod
+    def _secure_sw_hint(sw: int) -> str:
+        """Plain-language cause for a rejected secure-boot write."""
+        if sw == 0x6A86:
+            return ("the device rejected P1/P2 (SW=6A86) — this firmware does "
+                    "not implement this vendor command, or the parameters do "
+                    "not match its build; nothing was written")
+        if sw == 0x6982:
+            return "security status not satisfied (SW=6982) — nothing was written"
+        if sw == 0x6A82:
+            return ("the applet does not expose this command (SW=6A82) — "
+                    "this firmware build has no secure-boot support; nothing "
+                    "was written")
+        if sw == 0x6D00:
+            return "instruction not supported (SW=6D00) — nothing was written"
+        return f"the device answered SW={sw:04X} — nothing was written"
 
     def reboot(self, bootsel: bool = False):
         self.select_applet()

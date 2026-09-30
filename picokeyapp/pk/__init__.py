@@ -7,7 +7,7 @@ picokeyapp.ctap, which talk to the Android USB Host API through pyjnius.
 """
 
 from ._version import __version__
-from .PicoKey import PicoKey, Platform, Product, ConnectionType
+from .PicoKey import PicoKey, Platform, Product, ConnectionType, SecureBootError
 from .APDU import APDUResponse
 from .SWCodes import SWCodes
 from .PhyData import PhyData, PhyCurve, PhyUsbItf, PhyLedDriver, PhyOpt
@@ -23,4 +23,5 @@ __all__ = [
     "APDUResponse", "SWCodes", "PhyData", "PhyCurve", "PhyUsbItf",
     "PhyLedDriver", "PhyOpt", "SecureChannel",
     "PicoKeyError", "PicoKeyNotFoundError", "PicoKeyInvalidStateError",
+    "SecureBootError",
 ]
