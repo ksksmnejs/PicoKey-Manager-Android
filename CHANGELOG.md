@@ -40,6 +40,15 @@ Run workflow 时的可选开关：
 
 ### Fixed
 
+- **打开就闪退**：main.py 从 `picokeyapp.pk`（包的 `__init__.py`）导入 `SecureBootError`，
+  而那是另一个需要一并上传的文件。只传 main.py 而漏传 `__init__.py` 时，模块加载阶段
+  就 ImportError，App 在任何界面出现之前就退出——表现就是打开即闪退，且无任何线索。
+  现在改为直接从定义它的 PicoKey.py 导入，并带一个本地兜底定义，
+  无论哪些文件同步与否都能启动
+
+- **启动异常不再表现为闪退**：build() 现在捕获异常并显示一个带完整 traceback 的错误
+  界面，而不是让进程在窗口出现前退出。以后任何启动问题都能直接看到原因
+
 - **构建后「无法从 APK 读取签名证书」是检查脚本自己的错**：apksigner 输出的是
   `SHA-1 digest`，脚本却只按 `SHA1` 匹配，因此 apksigner 明明成功也取不到值；
   而 APK 若只有 v2/v3 签名、没有 META-INF 证书，回退路径同样落空。现在三种读法

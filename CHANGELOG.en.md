@@ -43,6 +43,17 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **The app crashed on launch**: main.py imported `SecureBootError` from `picokeyapp.pk`
+  (the package `__init__.py`), which is a separate file that has to be uploaded alongside
+  it. Uploading main.py without that file raises ImportError at module load, so the app
+  exits before a single widget exists - it just closes, with nothing to go on. The import
+  now goes straight to PicoKey.py where the class is defined, with a local fallback
+  definition, so the app starts no matter which subset of files is in sync
+
+- **A startup failure no longer looks like a crash**: build() now catches exceptions and
+  shows an error screen carrying the full traceback instead of letting the process exit
+  before any window appears. Any future startup problem is readable on screen
+
 - **"Could not read the signing certificate from the APK" was the checker's own bug**:
   apksigner prints `SHA-1 digest` but the script only matched `SHA1`, so a successful
   apksigner run still yielded nothing; and an APK carrying only a v2/v3 signature has no

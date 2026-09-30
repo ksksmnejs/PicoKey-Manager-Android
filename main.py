@@ -51,8 +51,19 @@ from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.utils import platform
 
 from picokeyapp import ctap, detect, flasher, fonts, i18n, usbhost
-from picokeyapp.pk import (PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf,
-                           SecureBootError)
+from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
+
+# Imported from the defining module rather than the package, because the
+# package __init__ is a separate file that has to be uploaded alongside this
+# one. If the two ever get out of step - a partial upload, say - importing
+# from the package raises ImportError at module load, and the app dies before
+# a single widget exists. That is the worst possible failure mode: a black
+# screen and no way to tell why.
+try:
+    from picokeyapp.pk.PicoKey import SecureBootError
+except ImportError:                                     # pragma: no cover
+    class SecureBootError(Exception):
+        """Fallback when PicoKey.py has not caught up with main.py yet."""
 
 _PLACEHOLDER = re.compile(r"@@([a-z_0-9]+)@@")
 _TOKEN = re.compile(r"\{\{([A-Z_0-9]+)\}\}")
@@ -760,6 +771,43 @@ class PicoKeyApp(App):
     # ------------------------------------------------------------ plumbing
 
     def build(self):
+        """Never let a startup failure be a silent exit.
+
+        An exception raised here - a KV parse error, a missing translation, a
+        half-finished upload - used to kill the process before any window
+        existed. On a phone that is indistinguishable from a crash on launch,
+        and there is nothing to go on: no dialog, no log, no way to tell what
+        broke. Showing the traceback on screen instead turns "it just closes"
+        into something that can actually be reported and fixed.
+        """
+        try:
+            return self._build_impl()
+        except Exception:
+            return self._crash_screen(traceback.format_exc())
+
+    @staticmethod
+    def _crash_screen(detail: str):
+        """A plain error screen, built without touching the app's own KV."""
+        from kivy.uix.boxlayout import BoxLayout
+        from kivy.uix.label import Label
+        from kivy.uix.scrollview import ScrollView
+
+        root = BoxLayout(orientation="vertical", padding=[12, 24, 12, 12])
+        root.add_widget(Label(
+            text="启动失败 / Startup failed", size_hint_y=None, height=40,
+            font_size="18sp", bold=True, color=(1, 0.4, 0.35, 1)))
+        scroll = ScrollView()
+        body = Label(text=detail, font_size="11sp",
+                     size_hint_y=None, halign="left", valign="top",
+                     color=(0.9, 0.9, 0.9, 1))
+        body.bind(texture_size=lambda _w, size: setattr(
+            body, "height", max(size[1], 1)))
+        body.text_size = (None, None)
+        scroll.add_widget(body)
+        root.add_widget(scroll)
+        return root
+
+    def _build_impl(self):
         # Must happen before any widget exists, otherwise the first labels are
         # laid out with Roboto and never re-measure.
         if not fonts.register():
