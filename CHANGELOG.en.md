@@ -43,6 +43,14 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **"Could not read the signing certificate from the APK" was the checker's own bug**:
+  apksigner prints `SHA-1 digest` but the script only matched `SHA1`, so a successful
+  apksigner run still yielded nothing; and an APK carrying only a v2/v3 signature has no
+  META-INF certificate for the fallback to read. Three readers are now tried in order
+  (apksigner, then keytool -jarfile, then unpacking the v1 certificate with python3),
+  both spellings match, and the log says which one worked. When none does, the message
+  states plainly that this is a limitation of the check, not evidence of bad signing
+
 - **A wrong-channel tap could only be caught after the fact**: PHY, secure boot and reboot
   need the CCID channel, WINK and the presence test need FIDO HID, yet every button stayed
   tappable. Tapping the wrong one reported "needs CCID, you are on HID" with a stack trace
