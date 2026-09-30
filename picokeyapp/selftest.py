@@ -235,6 +235,66 @@ def _check(label, condition, detail=""):
     return f"  [ok] {label}{(' - ' + detail) if detail else ''}"
 
 
+# Which device-screen button needs which channel. If a future edit adds a
+# button and forgets the `disabled:` rule, it silently becomes tappable on the
+# wrong channel again - and that failure only ever shows up as a stack trace
+# after the tap.
+_NEEDS_APDU = ("btn_refresh", "btn_read_phy", "btn_write_phy",
+               "btn_read_secure", "btn_secure_boot", "btn_reboot",
+               "btn_reboot_bootsel")
+_NEEDS_CTAP = ("btn_wink", "btn_test_presence")
+
+
+def _check_channel_gating():
+    """Every channel-specific button must be greyed out on the other channel."""
+    import os
+    import re
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(here), "main.py")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        # Inside a built APK there is no main.py on disk to read. Skipping is
+        # correct here: this check guards the source tree, not the running app,
+        # and failing it would abort the whole self test on a phone.
+        return ["  [skip] channel gating (source not available in a built app)"]
+
+    kv = re.search(r'KV_DEVICE = """(.*?)"""', src, re.S)
+    if not kv:
+        return [_check("channel gating rules present", False, "KV_DEVICE not found")]
+
+    # id: X ... disabled: app.busy or app.blocked_*
+    rules = {}
+    for block in re.split(r"\n(?=\s*(?:Menu|Primary|Danger)Button:)", kv.group(1)):
+        mid = re.search(r"id:\s*(\w+)", block)
+        mdis = re.search(r"disabled:\s*(.+)", block)
+        if mid and mdis:
+            rules[mid.group(1)] = mdis.group(1).strip()
+
+    out = []
+    missing = []
+    for name in _NEEDS_APDU:
+        if rules.get(name) != "app.busy or app.blocked_apdu":
+            missing.append(f"{name} (CCID)")
+    for name in _NEEDS_CTAP:
+        if rules.get(name) != "app.busy or app.blocked_ctap":
+            missing.append(f"{name} (HID)")
+    out.append(_check("channel gating rules present", not missing,
+                      "missing: " + ", ".join(missing) if missing else
+                      f"{len(rules)} button(s) gated"))
+
+    # The gating is driven by _sync_channel(); without it the bound properties
+    # never change and every button stays enabled on both channels.
+    sync = re.search(r"def _sync_channel\(self\):", src)
+    called = len(re.findall(r"self\._sync_channel\(\)", src))
+    out.append(_check("channel gating is applied on connect/disconnect",
+                      bool(sync) and called >= 2,
+                      f"_sync_channel defined={bool(sync)}, call sites={called}"))
+    return out
+
+
 def run() -> str:
     from . import ccid, ctap
     from .cbor_mini import loads, dumps
@@ -406,6 +466,7 @@ def run() -> str:
 
     from .pk.ICCD import Icc_Error_Short_Frame, RDR_to_PC_DataBlock
     from .pk.APDU import APDUResponse
+    from .pk import PicoKey, SecureBootError
     from . import flasher
 
     # a) fewer bytes than the 10-byte CCID header
@@ -442,6 +503,29 @@ def run() -> str:
     frame = trailing.exchange(bytes([0x63]) + b"\x00" * 9)
     lines.append(_check("stray bytes after the frame are dropped",
                         len(frame) == 10, f"{len(frame)} bytes"))
+
+    # d2) a refused secure-boot write names the cause and says nothing was written
+    class _Card:
+        def __init__(self, sw): self.sw = sw
+        def transmit(self, apdu): return b"", self.sw >> 8, self.sw & 0xFF
+
+    def _secure_probe(sw):
+        pk = PicoKey.__new__(PicoKey)
+        object.__setattr__(pk, "_PicoKey__card", _Card(sw))
+        object.__setattr__(pk, "_PicoKey__sc", None)
+        pk.select_applet = lambda: None
+        try:
+            pk.secure_boot(0, True)
+            return None
+        except SecureBootError as e:
+            return str(e)
+
+    r = _secure_probe(0x6A86)
+    lines.append(_check("refused secure boot names the cause",
+                        r is not None and "6A86" in r and "nothing was written" in r,
+                        str(r)))
+    lines.append(_check("accepted secure boot does not raise",
+                        _secure_probe(0x9000) is None, "ok"))
 
     # d) a status word should explain itself
     lines.append(_check("SW 6A86 explains itself",
@@ -608,6 +692,11 @@ def run() -> str:
     except Exception as e:
         lines.append(_check("mismatch after resync names both ops", False,
                             type(e).__name__ + ": " + str(e)))
+
+    lines.append("")
+    lines.append("")
+    lines.append(t("selftest_ui") + ":")
+    lines.extend(_check_channel_gating())
 
     lines.append("")
     lines.append(t("selftest_passed"))

@@ -183,6 +183,23 @@ STRINGS.update({
 
     # ------------------------------------------------------- extra PHY fields
     "field_usb_product": {"zh": "USB 产品名", "en": "USB product"},
+    "selftest_ui": {"zh": "界面通道控制", "en": "UI channel gating"},
+    "hint_channel_apdu": {
+        "zh": "当前是 CCID / 智能卡通道：PHY、安全启动、重启可用。WINK 与按键测试需要 FIDO HID 通道，已置灰，请回到扫描页换通道连接。",
+        "en": "You are on the CCID / smart card channel: PHY, secure boot and reboot work here. WINK and the presence test need the FIDO HID channel and are greyed out — go back to the scan page and connect on that channel instead.",
+    },
+    "hint_channel_ctap": {
+        "zh": "当前是 FIDO HID 通道：WINK 与按键测试可用。PHY、安全启动、重启需要 CCID / 智能卡通道，已置灰，请回到扫描页换通道连接。",
+        "en": "You are on the FIDO HID channel: WINK and the presence test work here. PHY, secure boot and reboot need the CCID / smart card channel and are greyed out — go back to the scan page and connect on that channel instead.",
+    },
+    "err_secure_write": {
+        "zh": "安全启动/安全锁没有写入成功：%s\n\n这是不可逆操作（会烧写 OTP/eFuse），请确认固件确实支持该命令后再试，不要反复重试。",
+        "en": "Secure boot / secure lock was not written: %s\n\nThis is irreversible (it burns OTP/eFuse). Confirm the firmware really supports the command before trying again, and do not retry blindly.",
+    },
+    "hint_led_driver": {
+        "zh": "必须与实际硬件匹配：板载彩灯（WS2812/NeoPixel）选 WS2812 或 NEOPIXEL，普通单色 LED 选 PICO。选错灯完全不亮 —— 彩灯需要 800kHz 精准时序，普通 GPIO 输出不了。\n\nGPIO 填真实引脚号（ESP32-S3 板载彩灯通常是 48），不是 Arduino 里 RGB_BUILTIN 的虚拟编号 97。",
+        "en": "Must match the actual hardware: WS2812 or NEOPIXEL for an on-board addressable LED, PICO for a plain single-colour LED. A wrong choice means the LED stays dark entirely — addressable LEDs need precise 800 kHz timing that a plain GPIO cannot produce.\n\nEnter the real pin number (ESP32-S3 on-board LEDs are usually 48), not Arduino's virtual RGB_BUILTIN value of 97.",
+    },
     "hint_up_btn": {
         "zh": "用于「用户存在」检测的物理按键 GPIO。ESP32-S3 的 BOOT 键通常接 GPIO0；多数 Pico 板出厂只有 BOOTSEL。写入后需重启才生效。\n\n重要：即便按键配置正确，注册/登录时只要用了 PIN，固件就会按规范跳过按键（pinUvAuthParam 已带 UP 标志），这是设计如此，改 PHY 也强制不了。",
         "en": "GPIO of the physical button used for user-presence checks. On ESP32-S3 the BOOT button is usually GPIO0; most Pico boards ship with only BOOTSEL. A reboot is required after writing.\n\nImportant: even with the button configured correctly, whenever a PIN is used during registration/login the firmware skips the button on purpose (the pinUvAuthParam already carries the UP flag). That is by design and no PHY change can force it.",
