@@ -43,6 +43,19 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **Secure boot / secure lock could never be enabled (wrong instruction)**: the app sent
+  `INS 1C P1=02` with a two-byte body, but in the rescue applet's table `1C` means "write
+  object N" and **P1 is the object number** - `P1=01` is the PHY config, which is why the
+  LED settings did take effect, while `P1=02` asks the device to write an object that does
+  not exist, hence 6A86. Reading the state with `1E P1=03` failed for the same reason:
+  there is no object 3. The real command is **`INS 1D`**, with the bootkey slot in P1 and
+  the lock flag in P2 and **no data**. Corrected
+
+- **New "Diagnose: list readable objects"**: scans P1 with the read-only `INS 1E` and lists
+  which objects actually exist (`P1=01` is the PHY, `P1=02` the flash). A read has no side
+  effect, so the device can tell you whether it supports secure boot instead of us guessing.
+  `1C`/`1D` are never used to probe - those write, and `1D` burns the eFuse
+
 - **The app crashed on launch**: main.py imported `SecureBootError` from `picokeyapp.pk`
   (the package `__init__.py`), which is a separate file that has to be uploaded alongside
   it. Uploading main.py without that file raises ImportError at module load, so the app

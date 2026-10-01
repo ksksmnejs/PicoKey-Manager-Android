@@ -560,6 +560,11 @@ BoxLayout:
                 text: '@@btn_read_secure@@'
                 disabled: app.busy or app.blocked_apdu
                 on_release: app.read_secure()
+            MenuButton:
+                id: btn_probe_secure
+                text: '@@btn_probe_secure@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.probe_secure()
             Row:
                 FieldLabel:
                     text: '@@field_bootkey@@'
@@ -1605,6 +1610,37 @@ class PicoKeyApp(App):
             self.log("secure: " + str(info))
 
         self._worker(work, done, i18n.t("msg_secure_reading"))
+
+    def probe_secure(self):
+        """List the rescue applet's readable objects.
+
+        Read-only on purpose. The secure-boot command burns eFuse/OTP, so the
+        only honest way to find out what a given build actually supports is to
+        ask with reads first and look at the answer.
+        """
+        def work():
+            pk = self._require_apdu()
+            table = pk.probe_read_objects()
+            lines = [i18n.t("probe_title")]
+            for p1 in sorted(table):
+                sw, data = table[p1]
+                if sw is None:
+                    lines.append(f"  P1={p1:02X}: {data.decode('utf-8', 'replace')}")
+                elif sw == 0x9000:
+                    preview = data.hex()[:48] + ("..." if len(data) > 24 else "")
+                    lines.append(f"  P1={p1:02X}: 9000, {len(data)}B, {preview}")
+                else:
+                    lines.append(f"  P1={p1:02X}: SW={sw:04X}")
+            lines.append("")
+            lines.append(i18n.t("probe_footer"))
+            return "\n".join(lines)
+
+        def done(report):
+            self._done(i18n.t("msg_probe_done"))
+            self.log(report)
+            self.go("log")
+
+        self._worker(work, done, i18n.t("msg_probe_running"))
 
     def set_secure_boot(self):
         def work():
