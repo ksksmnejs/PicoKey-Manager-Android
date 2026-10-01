@@ -317,15 +317,24 @@ class PicoKey:
     def secure_boot(self, bootkey_index: int = 0, lock: bool = False):
         """Enable secure boot / secure lock. Irreversible on real hardware.
 
-        The write used to ignore the returned status word entirely, so a board
-        that rejected the command with 6A86 was reported as "done". Next to a
+        This used to send INS 0x1C with P1=0x02 and a two-byte body. In the
+        rescue applet's table 0x1C is "write object N", and P1 *is* the object
+        number: P1=0x01 is the PHY config and it works (which is why the LED
+        settings took effect). P1=0x02 asks the device to write an object that
+        does not exist, so it answers 6A86 - "incorrect P1/P2", not "wrong
+        data". The secure command is a separate INS: 0x1D, with the bootkey
+        index in P1, the lock flag in P2 and no command data at all.
+
+        The write also used to ignore the returned status word entirely, so a
+        board that rejected the command was reported as "done". Next to a
         feature that burns fuses that is the worst possible answer: it invites
         retrying, and it hides that nothing happened at all.
         """
         self.select_applet()
-        data = [bootkey_index & 0xFF, 1 if lock else 0]
         try:
-            resp, sw = self.send(0x1C, cla=0x80, p1=0x02, data=data)
+            resp, sw = self.send(0x1D, cla=0x80,
+                                 p1=bootkey_index & 0xFF,
+                                 p2=0x01 if lock else 0x00)
         except APDUResponse as e:
             # send() raises on any non-9000 status; recover the word so the
             # reason can be named instead of re-raised as a bare status.
@@ -337,13 +346,41 @@ class PicoKey:
             raise SecureBootError(self._secure_sw_hint(sw))
         return bytes(resp)
 
+    def probe_read_objects(self, first: int = 0x00, last: int = 0x0F):
+        """Ask the device which read objects exist, without writing anything.
+
+        INS 0x1E is the rescue applet's read command and P1 selects the object:
+        P1=0x01 returns the PHY config and P1=0x02 the flash info, both of
+        which already work here. Rather than guess which P1 holds the secure
+        boot state (or whether it exists at all in this build), ask. A read
+        has no side effect, so scanning is safe on hardware where a write
+        would burn fuses permanently.
+
+        Never probe with 0x1C or 0x1D: those write, and 0x1D is the command
+        that burns the eFuse/OTP.
+        """
+        found = {}
+        for p1 in range(first, last + 1):
+            try:
+                self.select_applet()
+                resp, sw = self.send(0x1E, cla=0x80, p1=p1, ne=256)
+            except APDUResponse as e:
+                found[p1] = (e.sw, b"")
+                continue
+            except Exception as e:
+                found[p1] = (None, str(e).encode())
+                continue
+            found[p1] = (sw, bytes(resp))
+        return found
+
     @staticmethod
     def _secure_sw_hint(sw: int) -> str:
         """Plain-language cause for a rejected secure-boot write."""
         if sw == 0x6A86:
-            return ("the device rejected P1/P2 (SW=6A86) — this firmware does "
-                    "not implement this vendor command, or the parameters do "
-                    "not match its build; nothing was written")
+            return ("the device rejected P1/P2 (SW=6A86) — most likely this "
+                    "firmware build does not expose a secure-boot command at "
+                    "INS 0x1D, or the bootkey index is out of range for this "
+                    "chip; nothing was written")
         if sw == 0x6982:
             return "security status not satisfied (SW=6982) — nothing was written"
         if sw == 0x6A82:
