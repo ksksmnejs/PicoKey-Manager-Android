@@ -43,6 +43,16 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **The APK was not signed with our key (every build got a new signature)**: the debug
+  key in the repo was a PKCS12 container (keytool's default since JDK 9), but Gradle
+  reads the debug keystore as JKS - when it cannot load the file it silently deletes it
+  and generates a fresh one, so every build came out with a different signature and
+  phones reported a "signature conflict". The key is now normalised to JKS when
+  installed (a container change only - **the certificate and its fingerprint are
+  unchanged**, so nobody has to uninstall), and on top of that: if the finished APK
+  turns out to carry a foreign signature, it is re-signed with apksigner instead of
+  being published as something that will not install
+
 - **Secure boot / secure lock could never be enabled (wrong instruction)**: the app sent
   `INS 1C P1=02` with a two-byte body, but in the rescue applet's table `1C` means "write
   object N" and **P1 is the object number** - `P1=01` is the PHY config, which is why the
