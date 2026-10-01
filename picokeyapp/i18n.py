@@ -179,6 +179,10 @@ STRINGS.update({
     "sec_opts": {"zh": "—— 选项 ——", "en": "—— Options ——"},
     "sec_curves": {"zh": "—— 启用曲线（HSM）——", "en": "—— Enabled curves (HSM) ——"},
     "sec_security": {"zh": "—— 安全启动 ——", "en": "—— Secure boot ——"},
+    "skip_no_source": {
+        "zh": "已打包环境无源码，跳过（仅源码环境检查）",
+        "en": "packaged build has no source on disk; skipped",
+    },
     "sec_firmware": {"zh": "—— 固件与重启 ——", "en": "—— Firmware & reboot ——"},
 
     # ------------------------------------------------------- extra PHY fields
@@ -208,8 +212,16 @@ STRINGS.update({
         "en": "You are on the CCID / smart card channel: PHY, secure boot and reboot work here. WINK and the presence test need the FIDO HID channel and are greyed out — go back to the scan page and connect on that channel instead.",
     },
     "hint_channel_ctap": {
-        "zh": "当前是 FIDO HID 通道：WINK 与按键测试可用。PHY、安全启动、重启需要 CCID / 智能卡通道，已置灰，请回到扫描页换通道连接。",
-        "en": "You are on the FIDO HID channel: WINK and the presence test work here. PHY, secure boot and reboot need the CCID / smart card channel and are greyed out — go back to the scan page and connect on that channel instead.",
+        "zh": "当前是 FIDO HID 通道：WINK 与按键测试可用。PHY、安全启动、重启需要 CCID / 智能卡通道，已置灰，请回到扫描页换通道连接。\n\n"
+             "这不是本 App 的限制：上游 PicoForge 说明，7.0/7.2 固件才有走 FIDO 的老配置通道，"
+             "7.4 及更高（包括你这块的 8.0）只能通过 rescue / PCSC 模式改硬件配置。",
+        "en": "You are on the FIDO HID channel: WINK and the presence test work here. PHY, secure boot and reboot need the CCID / smart card channel and are greyed out — go back to the scan page and connect on that channel instead.\n\n"
+             "This is not an app limitation: upstream PicoForge documents that only firmware 7.0/7.2 has the legacy FIDO-only configuration path, while 7.4 and later (including the 8.0 on your board) require rescue / PCSC mode for hardware configuration changes.",
+    },
+    "hint_secure_unsupported": {
+        "zh": "上游 PicoForge 只标称支持到固件 7.6，你的板子是 8.0。安全启动这类命令在新固件上可能尚未开放或已变更，"
+             "报 6A86/6A82 时多半是固件不接受，而不是本 App 用错了参数。",
+        "en": "Upstream PicoForge only claims support up to firmware 7.6, and your board reports 8.0. Commands such as secure boot may not be exposed yet, or may have changed, on newer builds — a 6A86/6A82 usually means the firmware refuses rather than that this app sent wrong parameters.",
     },
     "err_secure_write": {
         "zh": "安全启动/安全锁没有写入成功：%s\n\n这是不可逆操作（会烧写 OTP/eFuse），请确认固件确实支持该命令后再试，不要反复重试。",
@@ -280,9 +292,18 @@ STRINGS.update({
     "dlg_secure_body": {
         "zh": "这会把启动密钥烧进 OTP/eFuse，无法撤销。\n\n"
              "密钥槽：{slot}\n永久锁定：{lock}\n\n"
+             "⚠️ 如果勾选了永久锁定，后果不只是「只能跑签名固件」：\n"
+             "上游文档明确说明，启用安全锁会同时使除官方 Pico Key 之外的所有密钥失效——"
+             "此后只有官方签名的固件能被识别，你将无法再自己编译或刷入自定义固件。\n\n"
              "烧错槽位可能导致板子再也无法启动未签名固件。确认无误请输入 CONFIRM。",
         "en": "This burns the boot key into OTP/eFuse and cannot be undone.\n\n"
               "Key slot: {slot}\nLock permanently: {lock}\n\n"
+              "⚠️ If you ticked permanent lock, the consequence is larger than "
+              "\"signed firmware only\": upstream documents that enabling the "
+              "secure lock also invalidates every key except the official Pico "
+              "Key one. Only officially signed firmware will be recognised "
+              "afterwards, and compiling or flashing your own builds will no "
+              "longer be possible.\n\n"
               "Burning the wrong slot may leave the board unable to run unsigned "
               "firmware. Type CONFIRM if you are sure.",
     },
@@ -430,7 +451,8 @@ STRINGS.update({
     "fw_esp_nosync": {"zh": "bootloader 没有响应，板子在下载模式吗？", "en": "bootloader did not answer - is the board in download mode?"},
     "fw_esp_timeout": {"zh": "bootloader 超时未响应", "en": "no response from the bootloader"},
     "fw_esp_short": {"zh": "响应被截断", "en": "truncated response"},
-    "fw_esp_mismatch": {"zh": "响应不匹配（收到 op {got}，期望 {want}）—— 已自动重同步一次仍失败", "en": "unexpected response (got op {got}, wanted {want}) - still wrong after one resync"},
+    "fw_esp_mismatch": {"zh": "响应不匹配（收到 op {got}，期望 {want}）—— 上一条命令的应答来晚了。该命令不能重复发送，已停止，未执行第二次", "en": "unexpected response (got op {got}, wanted {want}) - an earlier reply arrived late. This command must not be sent twice, so it was not repeated"},
+    "fw_esp_mismatch_retried": {"zh": "响应不匹配（收到 op {got}，期望 {want}）—— 已自动重同步一次仍失败", "en": "unexpected response (got op {got}, wanted {want}) - still wrong after one resync"},
     "fw_esp_status": {"zh": "bootloader 返回状态 {code}", "en": "bootloader returned status {code}"},
     "fw_saf_failed": {"zh": "打不开文件管理器：{err}", "en": "could not open the file manager: {err}"},
     "fw_no_bootloader": {"zh": "没找到处于下载模式的设备", "en": "no device in download mode found"},

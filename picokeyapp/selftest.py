@@ -9,6 +9,7 @@ Run from the shell:  python -m picokeyapp.selftest
 
 from __future__ import annotations
 
+import os
 import struct
 import time
 
@@ -110,10 +111,10 @@ class FakePicoKey:
         if apdu[:5] == bytes([0x00, 0xA4, 0x04, 0x04, 0x08]):
             self.selected = True
             return bytes([0x01, 0x02, 0x07, 0x04]), 0x90, 0x00    # RP2350 / FIDO / 7.4
-        # The rescue applet's real table: 0x1C writes object P1, 0x1E reads
-        # object P1, 0x1D is the secure command, 0x1F reboots. Only object
-        # 0x01 (PHY) and 0x02 (flash) are known to exist, which is why the
-        # old "read object 3 / write object 2" attempt answered 6A86.
+        # Upstream pypicokey's real table (picokey/PicoKey.py): 0x1C writes
+        # object P1 (01=PHY, 02=secure boot), 0x1E reads object P1
+        # (01=PHY, 02=flash, 03=secure info), 0x1F reboots. There is no 0x1D;
+        # an earlier revision invented one and it was wrong.
         if len(apdu) >= 4 and apdu[1] == 0x1E:
             p1 = apdu[2]                                   # CLA INS P1 P2
             if p1 == 0x01:
@@ -122,18 +123,27 @@ class FakePicoKey:
                 vals = [1024, 2048, 4096, 7, 400384]
                 out = b"".join(v.to_bytes(4, "big") for v in vals)
                 return out, 0x90, 0x00
+            if p1 == 0x03:
+                # Most boards in the field answer 6A86 here (the feature is not
+                # compiled in), which is exactly the case that used to raise.
+                if getattr(self, "secure_info_ok", False):
+                    return bytes([0x01, 0x00, 0x03]), 0x90, 0x00
+                return b"", 0x6A, 0x86
             return b"", 0x6A, 0x86          # unknown object
         if len(apdu) >= 4 and apdu[1] == 0x1C:
             if apdu[2] == 0x01:
                 self.phy_written = apdu
                 return b"", 0x90, 0x00
+            if apdu[2] == 0x02:
+                # Secure boot: P1=0x02, body is [bootkey slot, lock flag].
+                body = apdu[7:9]
+                self.secure_written = (body[0], body[1])
+                if self.secure_reject:
+                    return b"", ((self.secure_reject >> 8) & 0xFF,
+                                 self.secure_reject & 0xFF)[0], \
+                           self.secure_reject & 0xFF
+                return b"", 0x90, 0x00
             return b"", 0x6A, 0x86          # no such writable object
-        if len(apdu) >= 4 and apdu[1] == 0x1D:
-            # Secure command: P1 = bootkey slot, P2 = lock flag, no data.
-            self.secure_written = (apdu[2], apdu[3])
-            if self.secure_reject:
-                return b"", (self.secure_reject >> 8) & 0xFF, self.secure_reject & 0xFF
-            return b"", 0x90, 0x00
         if len(apdu) >= 4 and apdu[1] == 0x1F:
             self.rebooted = apdu[2]
             return b"", 0x90, 0x00
@@ -309,17 +319,56 @@ def _check_channel_gating():
     return out
 
 
-def _write_object_rejected(pk, p1: int) -> bool:
-    """True when writing object `p1` is refused.
+def _check_ins_table() -> list:
+    """Pin the rescue-applet command table to upstream pypicokey.
 
-    Guards the exact mistake that made secure boot look broken: asking the
-    rescue applet to write an object that does not exist.
+    Every INS here was at some point inferred from a documentation mirror
+    rather than read from source, and one of them (a nonexistent 0x1D used
+    for secure boot) was simply invented. The authoritative values come from
+    pypicokey's picokey/PicoKey.py:
+
+        0x1C P1=01  write PHY      0x1E P1=01  read PHY
+        0x1C P1=02  secure boot    0x1E P1=02  flash info
+        0x1F P1=..  reboot         0x1E P1=03  secure info
+
+    Checking them statically means a future edit that "fixes" one of these
+    from memory fails here instead of on real hardware.
     """
+    import re
+    out = [t("sec_security").strip("— ") + " (上游命令表):"]
     try:
-        pk.send(0x1C, cla=0x80, p1=p1, data=[0x00, 0x00])
-    except Exception:
-        return True          # send() raises on any non-9000 status
-    return False
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "pk", "PicoKey.py"), encoding="utf-8").read()
+    except OSError:
+        # Packaged APK: no source on disk. Not a failure, just uncheckable.
+        out.append("  [skip] " + t("skip_no_source"))
+        return out
+
+    expected = [
+        ("read PHY      -> 1E/P1=01",
+         r"self\.send\(0x1E,\s*cla=0x80,\s*p1=0x01"),
+        ("write PHY     -> 1C/P1=01",
+         r"self\.send\(0x1C,\s*cla=0x80,\s*p1=0x01"),
+        ("flash info    -> 1E/P1=02",
+         r"self\.send\(0x1E,\s*cla=0x80,\s*p1=0x02"),
+        ("secure info   -> 1E/P1=03",
+         r"self\.send\(0x1E,\s*cla=0x80,\s*p1=0x03"),
+        ("secure boot   -> 1C/P1=02",
+         r"self\.send\(0x1C,\s*cla=0x80,\s*p1=0x02"),
+        ("reboot        -> 1F",
+         r"self\.send\(0x1F,\s*cla=0x80"),
+    ]
+    for label, pattern in expected:
+        m = re.search(pattern, src)
+        out.append(_check(label, m is not None,
+                          "not found - diverged from upstream"
+                          if m is None else m.group(0)))
+
+    # 0x1D has never existed upstream. If it reappears, someone inferred it.
+    out.append(_check("INS 0x1D is not used at all",
+                      re.search(r"self\.send\(0x1D", src) is None,
+                      "0x1D does not exist in the upstream command table"))
+    return out
 
 
 def run() -> str:
@@ -406,15 +455,26 @@ def run() -> str:
     lines.append(_check("secure_info reports unavailable instead of raising",
                         pk.secure_info() is None))
 
-    # The secure command is INS 0x1D with the slot in P1 and the lock flag in
-    # P2, carrying no data - not a write to object 2.
+    # And when the board does answer, the three fields have to be decoded.
+    fake.secure_info_ok = True
+    try:
+        info = pk.secure_info()
+        lines.append(_check("secure_info decodes enabled/locked/bootkey",
+                            info is not None and info["enabled"] is True
+                            and info["locked"] is False
+                            and info["boot_key"] == 3, str(info)))
+    finally:
+        fake.secure_info_ok = False
+
+    # Upstream: INS 0x1C, P1=0x02, body [slot, lock]. An earlier revision sent
+    # INS 0x1D with the slot in P1 - invented from a doc mirror, and wrong.
     pk.secure_boot(3, True)
-    lines.append(_check("secure_boot sends INS 1D, P1=slot, P2=lock",
+    lines.append(_check("secure_boot sends INS 1C P1=02 with [slot, lock]",
                         fake.secure_written == (3, 1), str(fake.secure_written)))
 
     fake.reset_state()
     pk.secure_boot(0, False)
-    lines.append(_check("secure_boot without lock sends P2=0",
+    lines.append(_check("secure_boot without lock sends lock flag 0",
                         fake.secure_written == (0, 0), str(fake.secure_written)))
 
     # A refusal has to name the cause instead of looking like success.
@@ -431,9 +491,15 @@ def run() -> str:
     finally:
         fake.reset_state()
 
-    # The old mistake: writing object 2 as if it were the secure command.
-    lines.append(_check("writing object 2 is rejected by the device",
-                        _write_object_rejected(pk, 0x02)))
+    # Guard against the mistake this file once locked in: INS 0x1D never
+    # existed upstream. A device that does not implement it answers 6A82, so
+    # sending it must fail loudly rather than being reported as success.
+    try:
+        pk.send(0x1D, cla=0x80, p1=0x00, p2=0x00)
+        lines.append(_check("the invented INS 1D is not used", False,
+                            "a command that does not exist upstream succeeded"))
+    except Exception:
+        lines.append(_check("the invented INS 1D is not used", True))
 
     pk.reboot(True)
     lines.append(_check("reboot(BOOTSEL) reached the device", fake.rebooted == 0x01))
@@ -607,8 +673,10 @@ def run() -> str:
                 raise IOError("nothing to read")
             return self._pending.pop(0)
 
-    late = LateConn(flasher.OP_FLASH_END)
-    flasher.EspLoader(late).command(flasher.OP_FLASH_END, b"", 0, timeout=200)
+    # OP_READ_REG, not a flash op: only an idempotent command may be resent, and
+    # this check is about the resync happening at all.
+    late = LateConn(flasher.OP_READ_REG)
+    flasher.EspLoader(late).command(flasher.OP_READ_REG, b"", 0, timeout=200)
     lines.append(_check("stale frame -> resync and retry", len(late.written) == 2,
                         f"{len(late.written)} write(s)"))
 
@@ -738,13 +806,16 @@ def run() -> str:
     try:
         flasher.EspLoader(AlwaysWrong()).command(flasher.OP_FLASH_END, b"", 0,
                                                  timeout=200)
-        lines.append(_check("mismatch after resync names both ops", False,
+    # FLASH_END is deliberately not resent, so the message has to say that it
+    # stopped rather than claim a retry happened.
+        lines.append(_check("mismatch names both ops and says it stopped", False,
                             "no exception"))
     except flasher.FirmwareError as e:
-        lines.append(_check("mismatch after resync names both ops",
-                            "08" in str(e) and "04" in str(e), str(e)))
+        lines.append(_check("mismatch names both ops and says it stopped",
+                            "08" in str(e) and "04" in str(e)
+                            and "未执行第二次" in str(e), str(e)))
     except Exception as e:
-        lines.append(_check("mismatch after resync names both ops", False,
+        lines.append(_check("mismatch names both ops and says it stopped", False,
                             type(e).__name__ + ": " + str(e)))
 
     # f3) sync must not take a running firmware's log for a ROM reply.
@@ -811,8 +882,13 @@ def run() -> str:
         return [flasher.slip_decode(bytearray(w))[0] for w in conn.written]
 
     # Erase survives an SPI_ATTACH that answers with a non-zero status.
+    # drain is stubbed out here: the attach *did* answer, so there is nothing
+    # stale in the pipe, and letting drain run would eat the erase reply and
+    # then sit out the full 90s erase timeout.
     c = RecordingConn([_ack(0x0D, status=1), _ack(0xD0)])
-    flasher.EspLoader(c).erase_flash()
+    loader_e = flasher.EspLoader(c)
+    loader_e.drain = lambda *a, **k: None
+    loader_e.erase_flash(timeout=800)
     frames = _sent(c)
     lines.append(_check("erase attaches to SPI first",
                         len(frames) >= 1 and frames[0][1] == flasher.OP_SPI_ATTACH,
@@ -823,7 +899,9 @@ def run() -> str:
                         else "no erase command was sent"))
 
     c2 = RecordingConn([_ack(0x0D), _ack(0xD1)])
-    flasher.EspLoader(c2).erase_region(0x10000, 0x100000)
+    loader_r = flasher.EspLoader(c2)
+    loader_r.drain = lambda *a, **k: None
+    loader_r.erase_region(0x10000, 0x100000, timeout=800)
     fr = _sent(c2)[1]
     size, offset = struct.unpack_from("<II", fr, 8)
     lines.append(_check("region erase sends (size, offset) in that order",
@@ -836,6 +914,56 @@ def run() -> str:
                         (flasher.OP_SPI_ATTACH, flasher.OP_FLASH_BEGIN,
                          flasher.OP_FLASH_DATA, flasher.OP_FLASH_END),
                         f"ERASE_FLASH={flasher.OP_ERASE_FLASH:#04x}"))
+
+    # f5) A destructive command must never be retransmitted. The mismatch path
+    # retries when a stale frame turns up, which is right for a read but not for
+    # an erase: sending ERASE_FLASH a second time while the first is still
+    # running is not a retry, it is a second erase. This is exactly the
+    # "got op 0D, wanted D0" case - SPI_ATTACH's answer arriving late.
+    def _count_sent(conn, op, drain_noop=True):
+        loader = flasher.EspLoader(conn)
+        if drain_noop:
+            # Nothing left in the pipe, so draining must not consume the reply
+            # we are about to read - otherwise the test measures the fake
+            # connection's queue instead of the retry logic.
+            loader.drain = lambda *a, **k: None
+        try:
+            loader.command(op, b"", timeout=800)
+        except flasher.FirmwareError:
+            pass
+        return sum(1 for w in conn.written
+                   if flasher.slip_decode(bytearray(w))[0][1] == op)
+
+    # Counted once into a variable: calling it inside the message too would run
+    # a second command against the same connection and report the total.
+    stale = RecordingConn([_ack(0x0D)])
+    n_erase = _count_sent(stale, flasher.OP_ERASE_FLASH)
+    lines.append(_check("a destructive command is not retransmitted",
+                        n_erase == 1, f"ERASE_FLASH went out {n_erase} times"))
+
+    stale2 = RecordingConn([_ack(0x0D)])
+    n_data = _count_sent(stale2, flasher.OP_FLASH_DATA)
+    lines.append(_check("a flash data block is not retransmitted",
+                        n_data == 1, f"FLASH_DATA went out {n_data} times"))
+
+    # ...while an idempotent one still gets its retry.
+    late = RecordingConn([_ack(0x08), _ack(flasher.OP_READ_REG)])
+    loader_ro = flasher.EspLoader(late)
+    loader_ro.drain = lambda *a, **k: None
+    try:
+        loader_ro.command(flasher.OP_READ_REG, b"", timeout=800)
+        ok_ro = True
+    except flasher.FirmwareError:
+        ok_ro = False
+    n_ro = sum(1 for w in late.written
+               if flasher.slip_decode(bytearray(w))[0][1] == flasher.OP_READ_REG)
+    lines.append(_check("a read is still retried after a stale frame",
+                        ok_ro and n_ro == 2,
+                        f"succeeded={ok_ro}, sent {n_ro}x"))
+
+    lines.append("")
+    lines.append("")
+    lines.extend(_check_ins_table())
 
     lines.append("")
     lines.append("")
