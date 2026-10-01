@@ -274,6 +274,36 @@ STRINGS.update({
         "en": "Once locked the key cannot be changed. Check the slot first.",
     },
 
+    # Irreversible-write confirmation. It used to be a log line printed after
+    # the write had already happened, which is the wrong moment by definition.
+    "dlg_secure_title": {"zh": "确认写入安全启动？", "en": "Confirm secure boot write?"},
+    "dlg_secure_body": {
+        "zh": "这会把启动密钥烧进 OTP/eFuse，无法撤销。\n\n"
+             "密钥槽：{slot}\n永久锁定：{lock}\n\n"
+             "烧错槽位可能导致板子再也无法启动未签名固件。确认无误请输入 CONFIRM。",
+        "en": "This burns the boot key into OTP/eFuse and cannot be undone.\n\n"
+              "Key slot: {slot}\nLock permanently: {lock}\n\n"
+              "Burning the wrong slot may leave the board unable to run unsigned "
+              "firmware. Type CONFIRM if you are sure.",
+    },
+    "dlg_secure_typed_hint": {"zh": "在此输入 CONFIRM", "en": "Type CONFIRM here"},
+    "dlg_secure_typed_bad": {"zh": "输入不正确，请重新输入 CONFIRM", "en": "Not accepted — type CONFIRM again"},
+    "dlg_secure_go": {"zh": "确认写入", "en": "Write it"},
+    "btn_cancel": {"zh": "取消", "en": "Cancel"},
+
+    # Shown on the scan page when the board only offers its rescue interface,
+    # which is what a half-configured or crashed firmware looks like.
+    "hint_rescue_only": {
+        "zh": "只看到救援通道，说明固件没有正常跑起来（灯也不亮的话尤其如此）。\n"
+              "这是可以救回来的：断开 USB，按住 BOOT 键不放再插上（进 ROM 下载模式），"
+              "整片擦除后重新刷一次固件即可。ESP32 的 ROM 下载模式烧不掉。",
+        "en": "Only the rescue channel showed up, which means the firmware is not "
+              "running normally (especially if the LED is dark too).\n"
+              "This is recoverable: unplug, hold BOOT while plugging back in to enter "
+              "ROM download mode, erase the flash and re-flash the firmware. "
+              "The ESP32 ROM download mode cannot be bricked.",
+    },
+
     "msg_secure_reading": {"zh": "读取安全启动状态…", "en": "Reading secure boot status…"},
     "msg_secure_writing": {"zh": "写入安全启动配置…", "en": "Writing secure boot config…"},
     "msg_secure_done": {"zh": "安全启动状态：{state}", "en": "Secure boot status: {state}"},
