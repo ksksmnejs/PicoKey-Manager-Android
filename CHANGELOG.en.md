@@ -43,6 +43,11 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **Text overlapping**: the scan-page status, the device summary and the channel
+  buttons all used fixed heights, so long strings (the "found a serial device but
+  it did not answer the handshake" hint, for one) were clipped and the wrapped
+  remainder was drawn straight over the widgets below. Heights now follow the text
+
 - **The signature-conflict warning read like a failed build**: when a mismatch was
   found the wording was indistinguishable from a real failure, even though the next
   step re-signs and fixes it. Those messages are now notices saying plainly that it
@@ -141,6 +146,13 @@ If the build fails the job stops early and no version number is consumed.
   nothing happened. The status word now names the cause (6A86 unsupported parameters / 6A82 not
   implemented / 6982 not verified / 6D00 unsupported INS) and says plainly that nothing was
   written, without a stack trace
+
+### Added
+
+- **Erase whole flash (ESP32)**: when the firmware will not start, re-flashing it is
+  not enough — whatever stopped it booting is still in flash, so the board comes
+  back up in the same state. A recovery section on the firmware page now offers a
+  full-chip erase, and the web tool gained the same as section 4. Both ask first
 
 ## [v0.2.2] - 2026-09-27
 

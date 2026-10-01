@@ -43,6 +43,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.lang import Builder
+from kivy.metrics import dp
 from kivy.properties import (BooleanProperty, ListProperty, NumericProperty,
                              StringProperty)
 from kivy.uix.button import Button
@@ -295,6 +296,15 @@ BoxLayout:
                 text: '@@fw_save_uf2@@'
                 on_release: app.fw_save_uf2()
 
+            SectionLabel:
+                text: '@@fw_sec_recovery@@'
+            InfoLabel:
+                text: '@@fw_erase_note@@'
+                color: 1, 0.72, 0.42, 1
+            DangerButton:
+                text: '@@fw_erase_btn@@'
+                on_release: app.fw_erase()
+
             MenuButton:
                 text: '@@btn_back_scan@@'
                 on_release: app.go('scan')
@@ -344,11 +354,17 @@ BoxLayout:
         size_hint_y: None
         height: dp(40)
     Label:
+        # Height follows the text instead of being a fixed dp(60). Some strings
+        # here are long - the "found a serial device but it did not answer the
+        # handshake" hint, for one - and a fixed height clipped them, so the
+        # wrapped remainder was drawn straight over the scan button below.
         id: status
         text: app.status_text
         size_hint_y: None
-        height: dp(60)
+        height: max(dp(60), self.texture_size[1] + dp(10))
         text_size: self.width, None
+        halign: 'left'
+        valign: 'top'
         shorten: False
         font_size: '14sp'
         color: 0.7, 0.75, 0.8, 1
@@ -388,10 +404,12 @@ BoxLayout:
     padding: [dp(12), dp(12) + app.top_inset, dp(12), dp(12)]
     spacing: dp(6)
     Label:
+        # Same story as the scan-page status: the device summary grows with the
+        # number of lines the firmware reports, and dp(150) cut it off.
         id: info
         text: app.device_text
         size_hint_y: None
-        height: dp(150)
+        height: max(dp(120), self.texture_size[1] + dp(10))
         text_size: self.width, None
         font_size: '15sp'
         halign: 'left'
@@ -512,10 +530,11 @@ BoxLayout:
                 id: curves_value
                 text: app.curves_text
                 size_hint_y: None
-                height: dp(26)
+                height: max(dp(26), self.texture_size[1] + dp(8))
                 font_size: '13sp'
                 halign: 'left'
-                text_size: self.size
+                valign: 'top'
+                text_size: self.width, None
                 color: 0.7, 0.75, 0.8, 1
 
             GridLayout:
@@ -550,10 +569,11 @@ BoxLayout:
                 id: sec_status
                 text: app.secure_text
                 size_hint_y: None
-                height: dp(28)
+                height: max(dp(28), self.texture_size[1] + dp(8))
                 font_size: '14sp'
                 halign: 'left'
-                text_size: self.size
+                valign: 'top'
+                text_size: self.width, None
                 color: 0.8, 0.85, 0.9, 1
             PrimaryButton:
                 id: btn_read_secure
@@ -1195,6 +1215,41 @@ class PicoKeyApp(App):
 
         self._worker(work, on_ok=ok, busy_text=i18n.t("fw_working", n=0))
 
+    def fw_erase(self):
+        """Erase the whole flash chip.
+
+        The recovery step for a board whose firmware will not start. Re-flashing
+        on its own is not enough: whatever bad configuration stopped it booting
+        is still sitting in flash, so the board comes back up in exactly the
+        same state. Erasing first is what clears it.
+
+        ESP32 only. RP2040/RP2350 present as a U-disk, so there is nothing for
+        us to erase over serial - those need the upstream nuke image.
+        """
+        if self._fw_dev is None:
+            self.status_text = i18n.t("fw_no_bootloader")
+            return
+        dev = self._fw_dev
+
+        self._ask_confirm(
+            i18n.t("dlg_erase_title"),
+            i18n.t("dlg_erase_body"),
+            i18n.t("dlg_erase_go"),
+            lambda: self._do_erase(dev),
+        )
+
+    def _do_erase(self, dev):
+        def work():
+            flasher.erase_esp32(dev)
+            return True
+
+        def ok(_):
+            self.busy = False
+            self.status_text = i18n.t("fw_erase_done")
+            self.log("fw_erase: done")
+
+        self._worker(work, on_ok=ok, busy_text=i18n.t("fw_erasing"))
+
     def fw_save_uf2(self):
         """Hand a UF2 to the system file manager (RP2040/RP2350 path)."""
         if self._fw_kind != "uf2":
@@ -1299,10 +1354,16 @@ class PicoKeyApp(App):
             return
         self.status_text = i18n.t("scan_found", n=len(channels))
         for ch in channels:
+            # A plain Button does not wrap: without text_size bound to the
+            # width, a long channel label is drawn on one line and overflows
+            # the fixed height, overlapping whatever follows.
             btn = Button(text=f"{ch.label}\n{ch.detail}",
                          font_name=fonts.FONT_NAME,
-                         size_hint_y=None, height=70, font_size="13sp",
-                         halign="center")
+                         size_hint_y=None, font_size="13sp",
+                         halign="center", valign="center")
+            btn.bind(size=lambda _b, s: (
+                setattr(btn, "text_size", (btn.width - 12, None)),
+                setattr(btn, "height", max(btn.texture_size[1] + dp(16), 70))))
             btn.bind(on_release=lambda _b, c=ch: self.connect(c))
             box.add_widget(btn)
 
@@ -1314,10 +1375,11 @@ class PicoKeyApp(App):
             hint = Label(text=i18n.t("hint_rescue_only"),
                          font_name=fonts.FONT_NAME, font_size="13sp",
                          halign="left", valign="top",
-                         size_hint_y=None, height=150,
+                         size_hint_y=None,
                          color=(1, 0.86, 0.4, 1))
-            hint.bind(size=lambda *_a: setattr(hint, "text_size",
-                                              (hint.width - 12, None)))
+            hint.bind(size=lambda *_a: (
+                setattr(hint, "text_size", (hint.width - 12, None)),
+                setattr(hint, "height", max(hint.texture_size[1] + dp(10), 60))))
             box.add_widget(hint)
 
     def connect(self, channel):
@@ -1697,7 +1759,17 @@ class PicoKeyApp(App):
         lock = ids.chk_lock.state == "down"
         self._ask_secure_confirm(slot, lock)
 
-    def _ask_secure_confirm(self, slot, lock):
+    def _ask_confirm(self, title, body_text, go_label, on_yes, typed_word=None):
+        """One dialog for every irreversible action.
+
+        `typed_word` (e.g. "CONFIRM") makes the user type it before the action
+        runs. Used for eFuse writes; plain erase relies on the button alone,
+        which is enough for something that is destructive but recoverable.
+
+        The message label sizes itself to its text. A fixed height clipped long
+        strings and made them collide with the buttons below - the same bug
+        that hit the scan page.
+        """
         from kivy.uix.boxlayout import BoxLayout
         from kivy.uix.button import Button
         from kivy.uix.label import Label
@@ -1706,45 +1778,56 @@ class PicoKeyApp(App):
 
         body = BoxLayout(orientation="vertical", spacing=10, padding=12)
 
-        msg = Label(
-            text=i18n.t("dlg_secure_body", slot=slot,
-                        lock=i18n.t("lbl_yes") if lock else i18n.t("lbl_no")),
-            font_name=fonts.FONT_NAME, font_size="14sp",
-            halign="left", valign="top", size_hint_y=None, height=220,
-        )
-        msg.bind(size=lambda *_a: setattr(msg, "text_size", (msg.width - 12, None)))
+        msg = Label(text=body_text, font_name=fonts.FONT_NAME,
+                    font_size="14sp", halign="left", valign="top",
+                    size_hint_y=None)
+        msg.bind(size=lambda *_a: (
+            setattr(msg, "text_size", (msg.width - 12, None)),
+            setattr(msg, "height", max(msg.texture_size[1] + dp(8), 60))))
         body.add_widget(msg)
 
-        typed = TextInput(multiline=False, font_name=fonts.FONT_NAME,
-                          hint_text=i18n.t("dlg_secure_typed_hint"),
-                          size_hint_y=None, height=46, font_size="14sp")
-        body.add_widget(typed)
+        typed = None
+        if typed_word:
+            typed = TextInput(multiline=False, font_name=fonts.FONT_NAME,
+                              hint_text=i18n.t("dlg_secure_typed_hint"),
+                              size_hint_y=None, height=46, font_size="14sp")
+            body.add_widget(typed)
 
         row = BoxLayout(orientation="horizontal", spacing=10,
                         size_hint_y=None, height=52)
         cancel = Button(text=i18n.t("btn_cancel"), font_name=fonts.FONT_NAME)
-        go = Button(text=i18n.t("dlg_secure_go"), font_name=fonts.FONT_NAME)
+        go = Button(text=go_label, font_name=fonts.FONT_NAME)
         row.add_widget(cancel)
         row.add_widget(go)
         body.add_widget(row)
 
-        popup = Popup(title=i18n.t("dlg_secure_title"), content=body,
-                      size_hint=(0.94, 0.66), auto_dismiss=False)
+        popup = Popup(title=title, content=body,
+                      size_hint=(0.94, 0.72), auto_dismiss=False)
 
         def _cancel(_):
             popup.dismiss()
 
         def _go(_):
-            if (typed.text or "").strip().upper() != "CONFIRM":
+            if typed_word and (typed.text or "").strip().upper() != typed_word:
                 typed.text = ""
                 typed.hint_text = i18n.t("dlg_secure_typed_bad")
                 return
             popup.dismiss()
-            self._do_secure_boot(slot, lock)
+            on_yes()
 
         cancel.bind(on_release=_cancel)
         go.bind(on_release=_go)
         popup.open()
+
+    def _ask_secure_confirm(self, slot, lock):
+        self._ask_confirm(
+            i18n.t("dlg_secure_title"),
+            i18n.t("dlg_secure_body", slot=slot,
+                   lock=i18n.t("lbl_yes") if lock else i18n.t("lbl_no")),
+            i18n.t("dlg_secure_go"),
+            lambda: self._do_secure_boot(slot, lock),
+            typed_word="CONFIRM",
+        )
 
     def _do_secure_boot(self, slot, lock):
         def work():

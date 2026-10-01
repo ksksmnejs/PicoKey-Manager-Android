@@ -147,6 +147,16 @@
   <div class="banner warn" data-i18n="flashWarn" style="margin-top:10px"></div>
 </div>
 
+<!-- ============ 4. 恢复 ============ -->
+<h2 data-i18n="secRecovery">4. 恢复</h2>
+<div class="card">
+  <div class="sub" data-i18n="eraseNote" style="white-space:pre-wrap"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="danger" id="btnErase" onclick="doErase()" disabled data-i18n="btnErase">整片擦除</button>
+  </div>
+  <div class="sub" id="eraseText" style="margin-top:6px"></div>
+</div>
+
 <!-- ============ 日志 ============ -->
 <h2 data-i18n="secLog">日志</h2>
 <div class="card">
@@ -212,6 +222,12 @@ const I18N = {
     updateCheckFailed:"版本检查没能完成（不影响刷写功能）",
     btnConnect:"选择 USB 设备", btnDiag:"诊断接口", btnDisconnect:"断开",
     btnPickFile:"点击选择固件文件", btnFlash:"刷入（会覆盖现有固件）",
+    secRecovery:"4. 恢复", btnErase:"整片擦除",
+    eraseNote:"固件起不来时，只重刷是不够的——让它起不来的那份配置仍然留在 flash 里，刷完还是同样的状态。先整片擦除才能真正清干净。\n擦除会清空固件、配置和所有已注册的密钥。ESP32 的 ROM 下载模式烧不掉，这一步随时可以重试。",
+    erasing:"正在擦除整片 flash…",
+    eraseDone:"整片擦除完成。现在可以重新刷入固件了。",
+    eraseFailTitle:"擦除失败",
+    eraseFailBody:"擦除没有完成。\n\n请确认板子确实在 ROM 下载模式（拔掉，按住 BOOT 键不放再插上），然后重试。ROM 下载模式烧不掉，随时可以再试。\n\n详见日志。",
     btnClearLog:"清空日志", btnCopyLog:"复制日志", btnModalOk:"知道了",
     hintConnect:"让板子进入下载模式后再点上面的按钮。不同板子进入方式不同，请参考板子的说明。",
     reconnectTip:"若选择器一直为空，先拔插设备再点一次。",
@@ -281,6 +297,12 @@ const I18N = {
     updateCheckFailed:"Version check failed (flashing still works)",
     btnConnect:"Select USB device", btnDiag:"Diagnose", btnDisconnect:"Disconnect",
     btnPickFile:"Tap to pick a firmware file", btnFlash:"Flash (overwrites current firmware)",
+    secRecovery:"4. Recovery", btnErase:"Erase whole flash",
+    eraseNote:"When the firmware will not start, re-flashing alone is not enough: whatever stopped it booting is still in flash, so it comes back up in the same state. Erase the whole chip first to actually clear it.\nErasing wipes the firmware, its configuration and every credential. The ESP32 ROM download mode cannot be bricked, so this is always safe to retry.",
+    erasing:"Erasing the whole flash…",
+    eraseDone:"Flash erased. You can flash the firmware again now.",
+    eraseFailTitle:"Erase failed",
+    eraseFailBody:"The erase did not finish.\n\nMake sure the board really is in ROM download mode (unplug, hold BOOT while plugging back in), then try again. The ROM download mode cannot be bricked, so retrying is always safe.\n\nSee the log for the exact error.",
     btnClearLog:"Clear log", btnCopyLog:"Copy log", btnModalOk:"Got it",
     hintConnect:"Put the board into download mode, then tap the button. How you do that differs per board — check the board's own documentation.",
     reconnectTip:"If the chooser keeps coming up empty, unplug and replug, then tap again.",
@@ -569,13 +591,18 @@ function resetUi(){
   updateFlashGate();
 }
 function updateFlashGate(){
-  document.getElementById('btnFlash').disabled = !(device && fwReady);
+  // Erase only needs a connected board; flashing also needs a picked image.
+  const hasDev = !!device;
+  const e = document.getElementById('btnErase');
+  if (e) e.disabled = !hasDev;
+  document.getElementById('btnFlash').disabled = !(hasDev && fwReady);
 }
 
 /* --------------------------- SLIP + ROM protocol --------------------------- */
 const SLIP_END=0xC0, SLIP_ESC=0xDB, SLIP_ESC_END=0xDC, SLIP_ESC_ESC=0xDD;
 const OP_FLASH_BEGIN=0x02, OP_FLASH_DATA=0x03, OP_FLASH_END=0x04,
-      OP_SYNC=0x08, OP_SPI_ATTACH=0x0D;
+      OP_SYNC=0x08, OP_SPI_ATTACH=0x0D,
+      OP_ERASE_FLASH=0xD0, OP_ERASE_REGION=0xD1;
 const CHECKSUM_MAGIC=0xEF;
 
 function slipEncode(bytes){
@@ -733,6 +760,22 @@ class EspLoader {
     await this.command(OP_FLASH_END, u32(1), 4000);
     return total;
   }
+  async eraseFlash(timeout){
+    // The ROM holds the line while it works, so this needs a long timeout -
+    // 90s is generous for a 16MB chip and still bounded, so a command that
+    // never answers cannot hang the page forever.
+    try { await this.command(OP_SPI_ATTACH, u32(0), 4000); }
+    catch(e){ log(t('spiAttachNote') + ' (' + e.message + ')','warn'); }
+    await this.command(OP_ERASE_FLASH, new Uint8Array(0), timeout || 90000);
+  }
+  async eraseRegion(offset, size, timeout){
+    try { await this.command(OP_SPI_ATTACH, u32(0), 4000); }
+    catch(e){ log(t('spiAttachNote') + ' (' + e.message + ')','warn'); }
+    const p = new Uint8Array(8);
+    const dv = new DataView(p.buffer);
+    dv.setUint32(0, size, true); dv.setUint32(4, offset, true);
+    await this.command(OP_ERASE_REGION, p, timeout || 60000);
+  }
 }
 
 /* --------------------------- file picking --------------------------- */
@@ -808,6 +851,40 @@ async function doFlash(){
     showModal('mFlashFailTitle','mFlashFailBody','err');
   } finally {
     btn.disabled = !(device && fwReady);
+  }
+}
+
+/* --------------------------- erase whole flash --------------------------- */
+async function doErase(){
+  if (!device){ log(t('noDevice'),'warn'); return; }
+  // Destructive and there is no undo, so ask first - and say plainly that the
+  // board will not work again until firmware is flashed back onto it.
+  if (!confirm(t('eraseNote') + '\n\n' + t('btnErase') + '?')) return;
+
+  const btn = document.getElementById('btnErase');
+  const etext = document.getElementById('eraseText');
+  btn.disabled = true;
+  etext.textContent = t('erasing');
+  log(t('erasing'),'dim');
+
+  try {
+    const loader = new EspLoader(3000);
+    log(t('syncing'),'dim');
+    if (!await loader.sync()){
+      showModal('mWrongModeTitle','mWrongModeBody','err');
+      throw new Error('sync failed');
+    }
+    log('sync ok','ok');
+    await loader.eraseFlash();
+    log(t('eraseDone'),'ok');
+    etext.textContent = t('eraseDone');
+    showRawModal(t('btnErase'), t('eraseDone'), 'ok');
+  } catch(e){
+    log('erase failed: ' + e.message, 'err');
+    etext.textContent = '';
+    showModal('eraseFailTitle','eraseFailBody','err');
+  } finally {
+    btn.disabled = !device;
   }
 }
 
