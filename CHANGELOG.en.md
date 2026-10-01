@@ -43,6 +43,11 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **The self-test aborted on its first failure**: `_check` raised, so one run could only ever reveal one problem — fix it, run again, stop at the next one, which reads as "it fails forever". Failures are now collected and listed together at the end, so a single run shows everything
+
+- **"ERASE_FLASH went out 2 times" with no clue why**: that property lives in `flasher.py`, not here. Uploading only `selftest.py` makes the count 2 by construction, yet the message looked like a bug in the test. The guard is now checked first; when it is missing the test says plainly that the files are out of sync and to upload all of them, and skips the two counts
+
+
 - **Text overlapping**: the scan-page status, the device summary and the channel
   buttons all used fixed heights, so long strings (the "found a serial device but
   it did not answer the handshake" hint, for one) were clipped and the wrapped
