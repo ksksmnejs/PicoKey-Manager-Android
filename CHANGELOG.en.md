@@ -147,12 +147,29 @@ If the build fails the job stops early and no version number is consumed.
   implemented / 6982 not verified / 6D00 unsupported INS) and says plainly that nothing was
   written, without a stack trace
 
+- **The secure-boot instruction was wrong (introduced in the previous build)**: it had been
+  changed from `1C P1=02` to `0x1D`, based on a documentation mirror rather than source.
+  Checked against upstream pypicokey (`picokey/PicoKey.py`), `0x1D` does not exist there at
+  all — secure boot is `1C P1=02` with a two-byte body `[slot, lock flag]`. The 6A86 seen
+  earlier was therefore misread as "the object does not exist"; the device genuinely refuses,
+  for a reason that is still open. Restored to upstream's form, and the self-test now pins the
+  whole command table statically so it cannot be "fixed" from memory again
+
 ### Added
 
 - **Erase whole flash (ESP32)**: when the firmware will not start, re-flashing it is
   not enough — whatever stopped it booting is still in flash, so the board comes
   back up in the same state. A recovery section on the firmware page now offers a
   full-chip erase, and the web tool gained the same as section 4. Both ask first
+
+- **The secure lock consequence is now stated**: upstream documents that enabling it is not
+  merely "signed firmware only" — it also invalidates every key except the official Pico Key
+  one, after which only officially signed firmware is recognised and compiling or flashing
+  your own builds becomes impossible. That consequence was never mentioned before; it is now
+  in the confirmation dialog
+
+
+- **The channel hint now cites upstream**: not being able to change the PHY over the FIDO HID channel is not an app limitation — upstream PicoForge documents that only firmware 7.0/7.2 has the legacy FIDO-only configuration path, while 7.4 and later (including your 8.0) require rescue / PCSC mode.
 
 ## [v0.2.2] - 2026-09-27
 
