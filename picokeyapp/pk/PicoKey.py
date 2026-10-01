@@ -317,13 +317,15 @@ class PicoKey:
     def secure_boot(self, bootkey_index: int = 0, lock: bool = False):
         """Enable secure boot / secure lock. Irreversible on real hardware.
 
-        This used to send INS 0x1C with P1=0x02 and a two-byte body. In the
-        rescue applet's table 0x1C is "write object N", and P1 *is* the object
-        number: P1=0x01 is the PHY config and it works (which is why the LED
-        settings took effect). P1=0x02 asks the device to write an object that
-        does not exist, so it answers 6A86 - "incorrect P1/P2", not "wrong
-        data". The secure command is a separate INS: 0x1D, with the bootkey
-        index in P1, the lock flag in P2 and no command data at all.
+        Command taken from upstream pypicokey (picokey/PicoKey.py), which is
+        authoritative here: INS 0x1C, CLA 0x80, P1=0x02, two-byte body
+        [bootkey index, lock flag].
+
+        An earlier version of this file sent INS 0x1D with the index in P1 and
+        the flag in P2. That was inferred from a documentation mirror, not from
+        source, and it was wrong - upstream does not use 0x1D at all. The 6A86
+        those runs reported was therefore misread as "the object does not
+        exist"; 0x1C/P1=0x02 is genuinely what the firmware expects.
 
         The write also used to ignore the returned status word entirely, so a
         board that rejected the command was reported as "done". Next to a
@@ -331,10 +333,9 @@ class PicoKey:
         retrying, and it hides that nothing happened at all.
         """
         self.select_applet()
+        data = bytes([bootkey_index & 0xFF, 1 if lock else 0])
         try:
-            resp, sw = self.send(0x1D, cla=0x80,
-                                 p1=bootkey_index & 0xFF,
-                                 p2=0x01 if lock else 0x00)
+            resp, sw = self.send(0x1C, cla=0x80, p1=0x02, data=list(data))
         except APDUResponse as e:
             # send() raises on any non-9000 status; recover the word so the
             # reason can be named instead of re-raised as a bare status.
@@ -356,8 +357,8 @@ class PicoKey:
         has no side effect, so scanning is safe on hardware where a write
         would burn fuses permanently.
 
-        Never probe with 0x1C or 0x1D: those write, and 0x1D is the command
-        that burns the eFuse/OTP.
+        Never probe with 0x1C or 0x1F: those write, and 0x1C with P1=0x02 is
+        the command that burns the eFuse/OTP.
         """
         found = {}
         for p1 in range(first, last + 1):
@@ -377,10 +378,10 @@ class PicoKey:
     def _secure_sw_hint(sw: int) -> str:
         """Plain-language cause for a rejected secure-boot write."""
         if sw == 0x6A86:
-            return ("the device rejected P1/P2 (SW=6A86) — most likely this "
-                    "firmware build does not expose a secure-boot command at "
-                    "INS 0x1D, or the bootkey index is out of range for this "
-                    "chip; nothing was written")
+            return ("the device rejected P1/P2 (SW=6A86) on the secure-boot "
+                    "command (INS 0x1C, P1=0x02) — this firmware build most "
+                    "likely does not implement it, or the bootkey index is out "
+                    "of range for this chip; nothing was written")
         if sw == 0x6982:
             return "security status not satisfied (SW=6982) — nothing was written"
         if sw == 0x6A82:
