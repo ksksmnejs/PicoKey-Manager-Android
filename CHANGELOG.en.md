@@ -43,6 +43,15 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **The signature-conflict warning read like a failed build**: when a mismatch was
+  found the wording was indistinguishable from a real failure, even though the next
+  step re-signs and fixes it. Those messages are now notices saying plainly that it
+  is corrected below and is not a failed build. On top of that the APK is read back
+  once more after re-signing to confirm it took effect - otherwise a silently failed
+  re-sign would publish an APK that does not install. The keystore is also
+  re-checked immediately before Gradle runs, with its fingerprint printed, so it is
+  possible to tell which step replaced it
+
 - **The app and the web tool disagreed about the same board**: the two are separate
   implementations and used different rules - the app accepted any frame whose first
   byte was 0x01, while an ESP32-S3 prints to USB Serial/JTAG whether or not its
