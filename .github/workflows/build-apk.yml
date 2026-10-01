@@ -140,6 +140,33 @@ jobs:
             exit 1
           fi
 
+          # Normalise the container format to JKS.
+          #
+          # keytool has defaulted to PKCS12 since JDK 9, but the Gradle plugin
+          # reads the debug keystore as JKS: when it cannot load the file it
+          # silently deletes it and generates a fresh one, so every build comes
+          # out with a different signature and phones report "signature
+          # conflict" - which is exactly what was happening. The conversion is
+          # a container change only, so the certificate and its fingerprint
+          # are untouched: anyone who already installed a build made with this
+          # key can still update in place.
+          KSTYPE=$(keytool -list -keystore "$KS" -storepass android 2>/dev/null \
+                   | grep -i 'keystore type' | sed 's/.*: *//' | tr -d '\r')
+          echo "keystore container format: ${KSTYPE:-unknown}"
+          if [ "${KSTYPE:-}" != "JKS" ]; then
+            echo "::notice::converting ${KSTYPE:-unknown} -> JKS (same key, same fingerprint)"
+            keytool -importkeystore \
+              -srckeystore "$KS" -srcstoretype "${KSTYPE:-PKCS12}" \
+              -srcstorepass android -srckeypass android -srcalias androiddebugkey \
+              -destkeystore "$KS.jks" -deststoretype JKS \
+              -deststorepass android -destkeypass android -destalias androiddebugkey \
+              >/dev/null 2>&1 || {
+                echo "::error::could not convert the keystore to JKS"
+                exit 1
+              }
+            mv -f "$KS.jks" "$KS"
+          fi
+
           echo "Signing key in use:"
           keytool -list -v -keystore "$KS" -storepass android 2>/dev/null \
             | grep -E 'Alias name|SHA1' | head -2
@@ -365,6 +392,7 @@ jobs:
       # silently used a freshly generated key is reported here instead of
       # turning into "signature conflict" on somebody's phone.
       - name: Verify APK signature
+        id: verify
         run: |
           cd "${{ steps.locate.outputs.dir }}"
           set +e
@@ -476,16 +504,100 @@ jobs:
             echo "::warning::This is a limitation of the checker, not proof that"
             echo "::warning::signing is wrong - but it does mean this build was"
             echo "::warning::NOT confirmed as updatable in place."
+            echo "mismatch=false" >> "$GITHUB_OUTPUT"
           elif [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
             echo "::warning::The APK is NOT signed with the installed debug key."
-            echo "::warning::Gradle probably generated a fresh key, so every build"
+            echo "::warning::Gradle most likely generated a fresh key, so every build"
             echo "::warning::gets a different signature and phones report a"
             echo "::warning::'signature conflict'. Expected $EXPECTED, got $ACTUAL."
+            echo "::notice::the next step re-signs the APK with the pinned key"
+            echo "mismatch=true" >> "$GITHUB_OUTPUT"
           elif [ -n "$EXPECTED" ]; then
             echo "signature matches the debug key - updates will install in place"
             echo "over any build made since the key was introduced."
+            echo "mismatch=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "mismatch=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "expected=${EXPECTED:-}" >> "$GITHUB_OUTPUT"
           exit 0
+
+      # Belt and braces.
+      #
+      # Even with a JKS keystore in place, Gradle is free to sign with a key of
+      # its own choosing, and the only thing that actually matters to a phone
+      # is what is inside the finished APK. So when the check above finds a
+      # foreign signature, sign the APK again with the pinned key instead of
+      # shipping something that will not update.
+      #
+      # zipalign first: apksigner requires an aligned archive, and a mismatch
+      # in either order produces an APK that installs but misbehaves.
+      - name: Re-sign APK with the pinned key
+        if: steps.verify.outputs.mismatch == 'true'
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          set -eu
+          APK="${{ steps.verify.outputs.apk }}"
+          KS="$HOME/.android/debug.keystore"
+
+          if [ ! -f "$KS" ]; then
+            echo "::error::cannot re-sign: $KS is missing"
+            exit 1
+          fi
+
+          # Every lookup below is allowed to fail: under `set -e` a bare
+          # `cmd` (or `a && b`) that returns non-zero aborts the whole step,
+          # so a missing SDK directory would kill the build before it ever
+          # reached the real error message.
+          AS=""
+          for root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" \
+                      "$HOME/.buildozer/android/platform/android-sdk" \
+                      /usr/lib/android-sdk; do
+            [ -n "$root" ] || continue
+            cand=$(ls "$root"/build-tools/*/apksigner 2>/dev/null | head -1 || true)
+            if [ -n "$cand" ] && [ -x "$cand" ]; then AS="$cand"; break; fi
+          done
+          if [ -z "$AS" ] && command -v apksigner >/dev/null 2>&1; then
+            AS="apksigner"
+          fi
+
+          if [ -z "$AS" ]; then
+            echo "::error::cannot re-sign: apksigner not found in the SDK or on PATH"
+            exit 1
+          fi
+          echo "re-signing with: $AS"
+
+          ZA=$(dirname "$AS")/zipalign
+          if [ -x "$ZA" ]; then
+            if "$ZA" -f -p 4 "$APK" "$APK.aligned" >/dev/null 2>&1; then
+              mv -f "$APK.aligned" "$APK"
+              echo "zipalign: ok"
+            else
+              echo "::warning::zipalign failed; re-signing the archive as it is"
+              rm -f "$APK.aligned"
+            fi
+          else
+            echo "::warning::zipalign not found; the APK is assumed already aligned"
+          fi
+
+          # v1 is kept alongside v2/v3 so the APK still installs on old devices.
+          # Older build-tools do not know --v3-signing-enabled (it appeared in
+          # 28.0.3), and a rejected flag would fail the whole step, so the
+          # full set is tried first and the minimal set is the fallback.
+          if ! "$AS" sign --ks "$KS" --ks-key-alias androiddebugkey \
+                 --ks-pass pass:android --key-pass pass:android \
+                 --v1-signing-enabled true --v2-signing-enabled true \
+                 --v3-signing-enabled true "$APK" >/dev/null 2>&1; then
+            echo "::warning::v3 flags rejected; falling back to v1 + v2 only"
+            "$AS" sign --ks "$KS" --ks-key-alias androiddebugkey \
+                  --ks-pass pass:android --key-pass pass:android \
+                  --v1-signing-enabled true --v2-signing-enabled true "$APK"
+          fi
+
+          echo "=== certificate now inside the APK ==="
+          "$AS" verify --print-certs "$APK" 2>&1 | head -20
+          echo "::notice::APK re-signed with the pinned debug key"
 
       # Kept as well: artifacts survive even if the release step is skipped or
       # fails, and they cost nothing extra.
