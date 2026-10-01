@@ -253,9 +253,20 @@ class FakeFidoKey:
 
 # ------------------------------------------------------------------- checks
 
+_FAILURES = []
+
+
 def _check(label, condition, detail=""):
+    """Record one assertion without aborting the run.
+
+    This used to raise on the first failure. That is why the self-test looked
+    like it failed "forever": each run stopped at the first bad check, the fix
+    went in, and the next run stopped at the next one. Reporting every failure
+    in one pass means one run shows the whole picture.
+    """
     if not condition:
-        raise AssertionError(f"{label} FAILED {detail}")
+        _FAILURES.append(f"{label} FAILED {detail}".strip())
+        return f"  [FAIL] {label}{(' - ' + detail) if detail else ''}"
     return f"  [ok] {label}{(' - ' + detail) if detail else ''}"
 
 
@@ -376,6 +387,8 @@ def run() -> str:
     from .cbor_mini import loads, dumps
     from .pk import PicoKey, PhyData, PhyUsbItf, PhyLedDriver, PhyOpt, PhyCurve
 
+    # A second run must not inherit the first one's failures.
+    _FAILURES.clear()
     lines = [t("selftest_title"), ""]
 
     # 1. CBOR codec -----------------------------------------------------
@@ -920,6 +933,25 @@ def run() -> str:
     # an erase: sending ERASE_FLASH a second time while the first is still
     # running is not a retry, it is a second erase. This is exactly the
     # "got op 0D, wanted D0" case - SPI_ATTACH's answer arriving late.
+    #
+    # Guard first: this property lives in flasher.py, not here. If only
+    # selftest.py was uploaded, the count comes out 2 and the message says
+    # nothing about why - the reported failure looks like a bug in the test
+    # rather than a missing file.
+    def _flasher_has_guard():
+        import inspect
+        cls = flasher.EspLoader
+        if not hasattr(cls, "NON_IDEMPOTENT_OPS"):
+            return False
+        try:
+            return "_retry" in inspect.signature(cls.command).parameters
+        except (TypeError, ValueError):
+            return False
+
+    guard_ok = _flasher_has_guard()
+    lines.append(_check("selftest_flasher_skew", guard_ok,
+                        "" if guard_ok else t("selftest_flasher_skew")))
+
     def _count_sent(conn, op, drain_noop=True):
         loader = flasher.EspLoader(conn)
         if drain_noop:
@@ -936,15 +968,21 @@ def run() -> str:
 
     # Counted once into a variable: calling it inside the message too would run
     # a second command against the same connection and report the total.
-    stale = RecordingConn([_ack(0x0D)])
-    n_erase = _count_sent(stale, flasher.OP_ERASE_FLASH)
-    lines.append(_check("a destructive command is not retransmitted",
-                        n_erase == 1, f"ERASE_FLASH went out {n_erase} times"))
+    if guard_ok:
+        stale = RecordingConn([_ack(0x0D)])
+        n_erase = _count_sent(stale, flasher.OP_ERASE_FLASH)
+        lines.append(_check("a destructive command is not retransmitted",
+                            n_erase == 1, f"ERASE_FLASH went out {n_erase} times"))
 
-    stale2 = RecordingConn([_ack(0x0D)])
-    n_data = _count_sent(stale2, flasher.OP_FLASH_DATA)
-    lines.append(_check("a flash data block is not retransmitted",
-                        n_data == 1, f"FLASH_DATA went out {n_data} times"))
+        stale2 = RecordingConn([_ack(0x0D)])
+        n_data = _count_sent(stale2, flasher.OP_FLASH_DATA)
+        lines.append(_check("a flash data block is not retransmitted",
+                            n_data == 1, f"FLASH_DATA went out {n_data} times"))
+    else:
+        # Without the guard every mismatch is retried, so both counts would be
+        # 2. That measures the missing file, not the property, so say so.
+        lines.append("  [skip] a destructive command is not retransmitted")
+        lines.append("  [skip] a flash data block is not retransmitted")
 
     # ...while an idempotent one still gets its retry.
     late = RecordingConn([_ack(0x08), _ack(flasher.OP_READ_REG)])
@@ -971,7 +1009,12 @@ def run() -> str:
     lines.extend(_check_channel_gating())
 
     lines.append("")
-    lines.append(t("selftest_passed"))
+    if _FAILURES:
+        lines.append(t("selftest_failed", n=len(_FAILURES)))
+        for item in _FAILURES:
+            lines.append("  - " + item)
+    else:
+        lines.append(t("selftest_passed"))
     return "\n".join(lines)
 
 

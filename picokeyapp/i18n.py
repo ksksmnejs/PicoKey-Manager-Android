@@ -207,6 +207,19 @@ STRINGS.update({
              "1C for it, that one writes the PHY.",
     },
     "selftest_ui": {"zh": "界面通道控制", "en": "UI channel gating"},
+    "selftest_failed": {
+        "zh": "有 {n} 项未通过：",
+        "en": "{n} check(s) failed:",
+    },
+    "selftest_flasher_skew": {
+        "zh": "flasher.py 与本次自检版本不一致（缺少「非幂等命令不重发」保护）。"
+             "请上传包内的全部文件，而不是只传其中几个——只传 selftest.py 会出现这种"
+             "「你那边通过、我这边失败」的现象。",
+        "en": "flasher.py does not match this self-test (the \"never resend a "
+             "non-idempotent command\" guard is missing). Upload every file in "
+             "the package, not just some of them — shipping selftest.py alone "
+             "is what produces failures here that do not happen elsewhere.",
+    },
     "hint_channel_apdu": {
         "zh": "当前是 CCID / 智能卡通道：PHY、安全启动、重启可用。WINK 与按键测试需要 FIDO HID 通道，已置灰，请回到扫描页换通道连接。",
         "en": "You are on the CCID / smart card channel: PHY, secure boot and reboot work here. WINK and the presence test need the FIDO HID channel and are greyed out — go back to the scan page and connect on that channel instead.",

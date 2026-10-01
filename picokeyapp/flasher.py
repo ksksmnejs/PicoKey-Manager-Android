@@ -314,6 +314,14 @@ class EspLoader:
             if not chunk:
                 return
 
+    # Commands that must never be sent twice. The mismatch path below retransmits
+    # when a stale frame shows up, which is right for a read but destructive for
+    # these: a second ERASE_FLASH while the first is still running, or a repeated
+    # FLASH_DATA block, is exactly the kind of thing that leaves the board in a
+    # state nobody asked for.
+    NON_IDEMPOTENT_OPS = frozenset((OP_ERASE_FLASH, OP_ERASE_REGION,
+                                    OP_FLASH_BEGIN, OP_FLASH_DATA, OP_FLASH_END))
+
     def command(self, op: int, data: bytes = b"", checksum: int = 0,
                 timeout: int = None, _retry: bool = True) -> tuple:
         """Send one command and return (value, body)."""
@@ -325,14 +333,21 @@ class EspLoader:
         size = struct.unpack_from("<H", resp, 2)[0]
         (value,) = struct.unpack_from("<I", resp, 4)
         if direction != 0x01 or r_op != op:
-            if _retry:
-                # A well-formed frame, just not an answer to what we asked -
-                # the previous command's reply arriving late. Drop it and ask
-                # once more before declaring failure.
-                self._buf = bytearray()
-                self.drain()
+            # A late reply from the previous command. Retrying is only safe for
+            # commands where a second send does the same thing as the first; for
+            # the rest we drop the stale frame and fail, because resending an
+            # erase or a flash block does something extra rather than the same
+            # thing again.
+            self._buf = bytearray()
+            self.drain()
+            if _retry and op not in self.NON_IDEMPOTENT_OPS:
                 return self.command(op, data, checksum, timeout, _retry=False)
-            raise FirmwareError(t("fw_esp_mismatch", got=f"{r_op:02X}", want=f"{op:02X}",
+            # Saying "retried and still wrong" would be a lie for a command we
+            # deliberately refused to resend, and it is the difference between
+            # "the board is confused" and "we stopped before doing it twice".
+            key = ("fw_esp_mismatch" if op in self.NON_IDEMPOTENT_OPS
+                   else "fw_esp_mismatch_retried")
+            raise FirmwareError(t(key, got=f"{r_op:02X}", want=f"{op:02X}",
                                   default=f"unexpected response (got op {r_op:#02x}, "
                                           f"wanted {op:#02x})"))
         body = resp[8:8 + size]
@@ -402,7 +417,12 @@ class EspLoader:
             self.command(OP_SPI_ATTACH, struct.pack("<I", 0), timeout=4000)
         except FirmwareError:
             # Some ROMs answer with a non-zero status here but are still ready.
-            pass
+            # What must NOT be carried over is a reply that never arrived: it
+            # turns up later and gets read as the answer to the erase, which is
+            # how "got op 0D, wanted D0" happens. Clear the pipe before sending
+            # a command that cannot be sent twice.
+            self._buf = bytearray()
+            self.drain()
         self.command(OP_ERASE_FLASH, b"", timeout=timeout)
 
     def erase_region(self, offset: int, size: int, timeout: int = 60000) -> None:
@@ -410,7 +430,8 @@ class EspLoader:
         try:
             self.command(OP_SPI_ATTACH, struct.pack("<I", 0), timeout=4000)
         except FirmwareError:
-            pass
+            self._buf = bytearray()
+            self.drain()
         self.command(OP_ERASE_REGION, struct.pack("<II", size, offset),
                      timeout=timeout)
 
