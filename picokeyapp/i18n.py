@@ -291,6 +291,37 @@ STRINGS.update({
     "dlg_secure_go": {"zh": "确认写入", "en": "Write it"},
     "btn_cancel": {"zh": "取消", "en": "Cancel"},
 
+    # ------------------------------------------------- erase whole flash
+    "fw_sec_recovery": {"zh": "恢复", "en": "Recovery"},
+    "fw_erase_btn": {"zh": "整片擦除（ESP32）", "en": "Erase whole flash (ESP32)"},
+    "fw_erase_note": {
+        "zh": "固件起不来时，只重刷是不够的——让它起不来的那份配置仍然留在 flash 里，"
+              "刷完还是同样的状态。先整片擦除才能真正清干净。\n"
+              "ESP32 的 ROM 下载模式烧不掉，这一步随时可以重试。",
+        "en": "When the firmware will not start, re-flashing alone is not enough: "
+              "whatever stopped it booting is still in flash, so it comes back up "
+              "in the same state. Erase the whole chip first to actually clear it.\n"
+              "The ESP32 ROM download mode cannot be bricked, so this is always "
+              "safe to retry.",
+    },
+    "dlg_erase_title": {"zh": "确认整片擦除？", "en": "Erase the whole flash?"},
+    "dlg_erase_body": {
+        "zh": "这会清空 flash 上的全部内容：固件、配置、以及所有已注册的密钥。\n\n"
+              "擦除后板子将无法使用，直到重新刷入固件。\n\n"
+              "建议先确认你已经开启了 ROM 下载模式（拔掉，按住 BOOT 键不放再插上）。",
+        "en": "This clears everything on the flash: the firmware, its configuration, "
+              "and every credential stored on it.\n\n"
+              "The board will not work again until firmware is flashed back onto it.\n\n"
+              "Make sure you are in ROM download mode first (unplug, hold BOOT "
+              "while plugging back in).",
+    },
+    "dlg_erase_go": {"zh": "确认擦除", "en": "Erase it"},
+    "fw_erasing": {"zh": "正在擦除整片 flash…", "en": "Erasing the whole flash…"},
+    "fw_erase_done": {
+        "zh": "整片擦除完成。现在可以重新刷入固件了。",
+        "en": "Flash erased. You can flash the firmware again now.",
+    },
+
     # Shown when a board has a serial interface but the ROM never answered.
     # Without this the scan just says "nothing found", which reads as a broken
     # board when it actually means "you did not hold BOOT while plugging in".

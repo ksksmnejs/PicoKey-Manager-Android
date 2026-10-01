@@ -783,6 +783,60 @@ def run() -> str:
                         flasher.EspLoader(RealRom()).sync() is True,
                         "the board would never be detected"))
 
+    # f4) the erase commands have to land in the 0xD0 block, not next to the
+    # flash ones. Getting this wrong would send ERASE_FLASH where SPI_ATTACH
+    # was meant, i.e. wiping the chip when the user asked to flash.
+    class RecordingConn:
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.written = []
+
+        def write(self, data, timeout=None):
+            self.written.append(bytes(data))
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            if not self.replies:
+                return b""
+            return self.replies.pop(0)[:length]
+
+        def close(self):
+            pass
+
+    def _ack(op, status=0):
+        return flasher.slip_encode(
+            struct.pack("<BBHI", 0x01, op, 0, 0) + bytes([status]))
+
+    def _sent(conn):
+        return [flasher.slip_decode(bytearray(w))[0] for w in conn.written]
+
+    # Erase survives an SPI_ATTACH that answers with a non-zero status.
+    c = RecordingConn([_ack(0x0D, status=1), _ack(0xD0)])
+    flasher.EspLoader(c).erase_flash()
+    frames = _sent(c)
+    lines.append(_check("erase attaches to SPI first",
+                        len(frames) >= 1 and frames[0][1] == flasher.OP_SPI_ATTACH,
+                        "did not attach before erasing"))
+    lines.append(_check("erase sends ERASE_FLASH (0xD0)",
+                        len(frames) >= 2 and frames[1][1] == flasher.OP_ERASE_FLASH,
+                        f"sent op {frames[1][1]:#04x}" if len(frames) >= 2
+                        else "no erase command was sent"))
+
+    c2 = RecordingConn([_ack(0x0D), _ack(0xD1)])
+    flasher.EspLoader(c2).erase_region(0x10000, 0x100000)
+    fr = _sent(c2)[1]
+    size, offset = struct.unpack_from("<II", fr, 8)
+    lines.append(_check("region erase sends (size, offset) in that order",
+                        fr[1] == flasher.OP_ERASE_REGION
+                        and size == 0x100000 and offset == 0x10000,
+                        f"op {fr[1]:#04x} size {size:#x} offset {offset:#x}"))
+
+    lines.append(_check("erase opcodes do not collide with the flash ones",
+                        flasher.OP_ERASE_FLASH not in
+                        (flasher.OP_SPI_ATTACH, flasher.OP_FLASH_BEGIN,
+                         flasher.OP_FLASH_DATA, flasher.OP_FLASH_END),
+                        f"ERASE_FLASH={flasher.OP_ERASE_FLASH:#04x}"))
+
     lines.append("")
     lines.append("")
     lines.append(t("selftest_ui") + ":")

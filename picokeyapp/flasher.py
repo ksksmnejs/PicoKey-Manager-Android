@@ -158,6 +158,9 @@ OP_WRITE_REG = 0x0A
 OP_SPI_ATTACH = 0x0D
 OP_CHANGE_BAUDRATE = 0x0F
 OP_SPI_FLASH_MD5 = 0x13
+# Erase commands live in the 0xD0 block, not next to the flash ones.
+OP_ERASE_FLASH = 0xD0
+OP_ERASE_REGION = 0xD1
 
 CHECKSUM_MAGIC = 0xEF
 
@@ -382,6 +385,35 @@ class EspLoader:
 
         self.command(OP_FLASH_END, struct.pack("<I", 1), timeout=4000)
 
+    def erase_flash(self, timeout: int = 90000) -> None:
+        """Erase the whole flash chip.
+
+        This is the recovery step for a board whose firmware will not start:
+        re-flashing alone leaves whatever bad configuration was already there,
+        so the board comes back up in exactly the same broken state. Erasing
+        first is what actually clears it.
+
+        The ROM holds the line while it works, so the timeout has to be long -
+        90s is generous for a 16MB chip and still bounded, which matters
+        because a command that never answers would otherwise hang the worker
+        thread forever.
+        """
+        try:
+            self.command(OP_SPI_ATTACH, struct.pack("<I", 0), timeout=4000)
+        except FirmwareError:
+            # Some ROMs answer with a non-zero status here but are still ready.
+            pass
+        self.command(OP_ERASE_FLASH, b"", timeout=timeout)
+
+    def erase_region(self, offset: int, size: int, timeout: int = 60000) -> None:
+        """Erase [offset, offset+size)."""
+        try:
+            self.command(OP_SPI_ATTACH, struct.pack("<I", 0), timeout=4000)
+        except FirmwareError:
+            pass
+        self.command(OP_ERASE_REGION, struct.pack("<II", size, offset),
+                     timeout=timeout)
+
 
 def _now():
     import time
@@ -415,6 +447,34 @@ def verify_download_mode(device) -> bool:
                 conn.close()
             except Exception:
                 pass
+
+
+def erase_esp32(device, region: tuple = None) -> None:
+    """Erase an ESP32 in download mode - the whole chip by default.
+
+    `region` is an optional (offset, size) pair for a partial erase.
+
+    The ROM download mode lives in mask ROM and cannot be bricked, so this is
+    always safe to attempt; it just destroys the contents, which is the point.
+    """
+    intfs = device.interfaces_of_class(USB_CLASS_CDC_DATA)
+    if not intfs:
+        raise FirmwareError(t("fw_no_cdc", default="no serial interface found"))
+    conn = usbhost.Connection(device, intfs[0], force=True)
+    try:
+        loader = EspLoader(conn)
+        if not loader.sync():
+            raise FirmwareError(t("fw_esp_nosync",
+                                  default="bootloader did not answer - is the board in download mode?"))
+        if region:
+            loader.erase_region(region[0], region[1])
+        else:
+            loader.erase_flash()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def flash_esp32(device, image: bytes, progress=None):
