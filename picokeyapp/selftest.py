@@ -14,6 +14,15 @@ import time
 
 from .i18n import t
 
+# From the defining module rather than the package: the package __init__ is a
+# separate file, and a partial upload that leaves it behind would turn the
+# whole self test into an ImportError instead of a report.
+try:
+    from .pk.PicoKey import SecureBootError
+except ImportError:                                     # pragma: no cover
+    class SecureBootError(Exception):
+        """Fallback when PicoKey.py has not caught up with selftest.py."""
+
 
 def _now():
     return time.monotonic()
@@ -93,6 +102,7 @@ class FakePicoKey:
         self.rebooted = None
         self.secure = None
         self.secure_written = None
+        self.secure_reject = 0      # set to a SW (e.g. 0x6A86) to refuse
 
     # APDU layer -> (data, sw1, sw2)
     def apdu(self, apdu):
@@ -100,6 +110,10 @@ class FakePicoKey:
         if apdu[:5] == bytes([0x00, 0xA4, 0x04, 0x04, 0x08]):
             self.selected = True
             return bytes([0x01, 0x02, 0x07, 0x04]), 0x90, 0x00    # RP2350 / FIDO / 7.4
+        # The rescue applet's real table: 0x1C writes object P1, 0x1E reads
+        # object P1, 0x1D is the secure command, 0x1F reboots. Only object
+        # 0x01 (PHY) and 0x02 (flash) are known to exist, which is why the
+        # old "read object 3 / write object 2" attempt answered 6A86.
         if len(apdu) >= 4 and apdu[1] == 0x1E:
             p1 = apdu[2]                                   # CLA INS P1 P2
             if p1 == 0x01:
@@ -108,17 +122,17 @@ class FakePicoKey:
                 vals = [1024, 2048, 4096, 7, 400384]
                 out = b"".join(v.to_bytes(4, "big") for v in vals)
                 return out, 0x90, 0x00
-            if p1 == 0x03:
-                return bytes([0x00, 0x00, 0x00]), 0x90, 0x00
-            return b"", 0x6A, 0x86
+            return b"", 0x6A, 0x86          # unknown object
         if len(apdu) >= 4 and apdu[1] == 0x1C:
-            self.phy_written = apdu
-            if apdu[2] == 0x02:                        # secure boot (p1 = 0x02)
-                # Lc occupies apdu[5:7] here (1 pad byte + 2 length bytes),
-                # so the data field starts at apdu[7].
-                lc_len = (apdu[5] << 8) | apdu[6]
-                body = list(apdu[7:7 + lc_len])
-                self.secure_written = (body[0], body[1]) if len(body) >= 2 else tuple(body)
+            if apdu[2] == 0x01:
+                self.phy_written = apdu
+                return b"", 0x90, 0x00
+            return b"", 0x6A, 0x86          # no such writable object
+        if len(apdu) >= 4 and apdu[1] == 0x1D:
+            # Secure command: P1 = bootkey slot, P2 = lock flag, no data.
+            self.secure_written = (apdu[2], apdu[3])
+            if self.secure_reject:
+                return b"", (self.secure_reject >> 8) & 0xFF, self.secure_reject & 0xFF
             return b"", 0x90, 0x00
         if len(apdu) >= 4 and apdu[1] == 0x1F:
             self.rebooted = apdu[2]
@@ -295,6 +309,19 @@ def _check_channel_gating():
     return out
 
 
+def _write_object_rejected(pk, p1: int) -> bool:
+    """True when writing object `p1` is refused.
+
+    Guards the exact mistake that made secure boot look broken: asking the
+    rescue applet to write an object that does not exist.
+    """
+    try:
+        pk.send(0x1C, cla=0x80, p1=p1, data=[0x00, 0x00])
+    except Exception:
+        return True          # send() raises on any non-9000 status
+    return False
+
+
 def run() -> str:
     from . import ccid, ctap
     from .cbor_mini import loads, dumps
@@ -374,12 +401,39 @@ def run() -> str:
     # ---------------------------------------------------------- secure boot
     lines.append("")
     lines.append(t("sec_security").strip("— ") + ":")
-    sec = pk.secure_info()
-    lines.append(_check("secure_info parsed",
-                        set(sec) == {"enabled", "locked", "boot_key"}, str(sec)))
+    # Object 0x03 is not readable on a real board any more, so secure_info()
+    # must simply report "unavailable" instead of raising.
+    lines.append(_check("secure_info reports unavailable instead of raising",
+                        pk.secure_info() is None))
+
+    # The secure command is INS 0x1D with the slot in P1 and the lock flag in
+    # P2, carrying no data - not a write to object 2.
     pk.secure_boot(3, True)
-    lines.append(_check("secure_boot reached the device",
+    lines.append(_check("secure_boot sends INS 1D, P1=slot, P2=lock",
                         fake.secure_written == (3, 1), str(fake.secure_written)))
+
+    fake.reset_state()
+    pk.secure_boot(0, False)
+    lines.append(_check("secure_boot without lock sends P2=0",
+                        fake.secure_written == (0, 0), str(fake.secure_written)))
+
+    # A refusal has to name the cause instead of looking like success.
+    fake.reset_state()
+    fake.secure_reject = 0x6A86
+    try:
+        pk.secure_boot(0, True)
+        lines.append(_check("a board that refuses reports it", False,
+                            "no exception"))
+    except SecureBootError as e:
+        lines.append(_check("a board that refuses reports it",
+                            "6A86" in str(e) and "written" in str(e).lower(),
+                            str(e)))
+    finally:
+        fake.reset_state()
+
+    # The old mistake: writing object 2 as if it were the secure command.
+    lines.append(_check("writing object 2 is rejected by the device",
+                        _write_object_rejected(pk, 0x02)))
 
     pk.reboot(True)
     lines.append(_check("reboot(BOOTSEL) reached the device", fake.rebooted == 0x01))
@@ -466,15 +520,7 @@ def run() -> str:
 
     from .pk.ICCD import Icc_Error_Short_Frame, RDR_to_PC_DataBlock
     from .pk.APDU import APDUResponse
-    # From the defining module, not the package: the package __init__ is a
-    # separate file and a partial upload that leaves it behind would turn the
-    # whole self test into an ImportError instead of a report.
     from .pk import PicoKey
-    try:
-        from .pk.PicoKey import SecureBootError
-    except ImportError:                                 # pragma: no cover
-        class SecureBootError(Exception):               # noqa: F811
-            """Fallback when PicoKey.py has not caught up with selftest.py."""
     from . import flasher
 
     # a) fewer bytes than the 10-byte CCID header

@@ -183,6 +183,25 @@ STRINGS.update({
 
     # ------------------------------------------------------- extra PHY fields
     "field_usb_product": {"zh": "USB 产品名", "en": "USB product"},
+    "btn_probe_secure": {
+        "zh": "诊断：列出可读对象",
+        "en": "Diagnose: list readable objects",
+    },
+    "msg_probe_running": {"zh": "正在探测…", "en": "Probing…"},
+    "msg_probe_done": {"zh": "探测完成，见日志", "en": "Probe finished, see the log"},
+    "probe_title": {
+        "zh": "救援通道可读对象（INS 1E，仅读取，无副作用）：",
+        "en": "Rescue applet readable objects (INS 1E, read-only, no side effects):",
+    },
+    "probe_footer": {
+        "zh": "已知：P1=01 是 PHY 配置，P1=02 是 Flash 信息。若表中没有返回安全状态的对象，"
+             "说明当前固件没有实现安全启动；安全启动写命令是 INS 1D（P1=密钥槽，P2=是否锁定），"
+             "不要用 1C 去写——那是写 PHY 的指令。",
+        "en": "Known: P1=01 is the PHY config, P1=02 is the flash info. If no object in the "
+             "list reports a secure state, this firmware has no secure-boot support. The "
+             "secure-boot write is INS 1D (P1 = bootkey slot, P2 = lock flag); do not use "
+             "1C for it, that one writes the PHY.",
+    },
     "selftest_ui": {"zh": "界面通道控制", "en": "UI channel gating"},
     "hint_channel_apdu": {
         "zh": "当前是 CCID / 智能卡通道：PHY、安全启动、重启可用。WINK 与按键测试需要 FIDO HID 通道，已置灰，请回到扫描页换通道连接。",
