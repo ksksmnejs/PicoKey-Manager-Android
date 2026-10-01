@@ -315,6 +315,24 @@ jobs:
           echo "=== sdkmanager ==="
           ls -la "$P/android-sdk/tools/bin/" 2>/dev/null || echo "(sdkmanager not installed yet)"
 
+      # Everything between "Install signing key" and the build downloads and
+      # unpacks the Android SDK, and nothing guarantees ~/.android survives that
+      # untouched. Re-assert the key immediately before Gradle runs and print
+      # what is actually on disk at that moment, so "Gradle generated its own
+      # key" can never again be a guess: either the fingerprint below matches
+      # the APK afterwards, or the file was replaced between here and there.
+      - name: Re-assert signing key before build
+        run: |
+          set -eu
+          KS="$HOME/.android/debug.keystore"
+          if [ ! -f "$KS" ]; then
+            echo "::error::debug.keystore disappeared after the SDK setup"
+            exit 1
+          fi
+          echo "keystore at build time: $KS"
+          keytool -list -v -keystore "$KS" -storepass android 2>/dev/null \
+            | grep -E 'Keystore type|Alias name|SHA1:' || true
+
       # Informational only: the APK does not depend on this passing.
       - name: Sanity check (protocol self-test, no hardware needed)
         continue-on-error: true
@@ -506,11 +524,12 @@ jobs:
             echo "::warning::NOT confirmed as updatable in place."
             echo "mismatch=false" >> "$GITHUB_OUTPUT"
           elif [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "::warning::The APK is NOT signed with the installed debug key."
-            echo "::warning::Gradle most likely generated a fresh key, so every build"
-            echo "::warning::gets a different signature and phones report a"
-            echo "::warning::'signature conflict'. Expected $EXPECTED, got $ACTUAL."
-            echo "::notice::the next step re-signs the APK with the pinned key"
+            echo "::notice::The APK left Gradle with a different signature than the"
+            echo "::notice::pinned key - Gradle most likely generated one of its own."
+            echo "::notice::This is corrected below by re-signing, so it is not a"
+            echo "::notice::failed build; it does mean the pinned keystore is not"
+            echo "::notice::reaching Gradle, which is worth fixing separately."
+            echo "::notice::Expected $EXPECTED, got $ACTUAL."
             echo "mismatch=true" >> "$GITHUB_OUTPUT"
           elif [ -n "$EXPECTED" ]; then
             echo "signature matches the debug key - updates will install in place"
@@ -597,7 +616,29 @@ jobs:
 
           echo "=== certificate now inside the APK ==="
           "$AS" verify --print-certs "$APK" 2>&1 | head -20
-          echo "::notice::APK re-signed with the pinned debug key"
+
+          # Confirm the fix actually took: read the APK back one more time and
+          # compare. Without this the step could only ever claim success, and a
+          # silently failed re-sign would ship exactly the APK that does not
+          # install.
+          norm() { tr -d ' :' | tr 'A-F' 'a-f'; }
+          AFTER=$("$AS" verify --print-certs "$APK" 2>&1 \
+                  | grep -iE 'SHA-?1' | head -1 \
+                  | sed -E 's/.*SHA-?1[^:]*: *//I' | norm)
+          WANT=$(keytool -list -v -keystore "$KS" -storepass android 2>/dev/null \
+                 | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+
+          if [ -z "$AFTER" ] || [ -z "$WANT" ]; then
+            echo "::error::could not confirm the re-signed APK"
+            exit 1
+          fi
+          if [ "$AFTER" != "$WANT" ]; then
+            echo "::error::re-signing did not take effect"
+            echo "::error::expected $WANT, still $AFTER"
+            exit 1
+          fi
+          echo "::notice::re-signed and confirmed: $AFTER - this APK will install"
+          echo "::notice::in place over any build made with this key"
 
       # Kept as well: artifacts survive even if the release step is skipped or
       # fails, and they cost nothing extra.
