@@ -43,6 +43,14 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **The app and the web tool disagreed about the same board**: the two are separate
+  implementations and used different rules - the app accepted any frame whose first
+  byte was 0x01, while an ESP32-S3 prints to USB Serial/JTAG whether or not its
+  firmware is running, so a live firmware was taken for a ready bootloader and the
+  app said "done" exactly where the web tool said "sync failed".
+  Both sides now use the same check (direction, opcode, length, and two consecutive
+  successes), and the scan performs a real handshake before offering a device
+
 - **The secure-boot confirmation only existed in the log**: the only gate before
   burning OTP/eFuse was a checkbox on a crowded screen, and the warning was printed
   to the log *after* the write - too late, and invisible unless you went looking.

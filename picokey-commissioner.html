@@ -672,14 +672,28 @@ class EspLoader {
     dv.setUint32(0, 0, true);
     payload.set([0x07,0x07,0x12,0x20], 4);
     payload.fill(0x55, 8);
-    for (let i=0;i<attempts;i++){
-      try {
-        await this.write(slipEncode(packet(OP_SYNC, payload)));
-        const resp = await this.readFrame(500);
-        if (resp && resp.length && resp[0] === 0x01) return true;
-      } catch(e){ /* retry */ }
-    }
-    return false;
+    // Checked properly, and required twice.
+    //
+    // A ROM answers every time; a stray byte sequence in a firmware log that
+    // happens to look like one reply will not also look like a second. The
+    // app used to accept any frame starting with 0x01, which is why it could
+    // print "done" on the very board where this page, reading less noise,
+    // correctly said "sync failed". Same board, two answers - the difference
+    // was who checked. Both sides now use the same rule.
+    const oneRound = async () => {
+      for (let i=0;i<attempts;i++){
+        try {
+          await this.write(slipEncode(packet(OP_SYNC, payload)));
+          const resp = await this.readFrame(500);
+          if (!resp || resp.length < 8) continue;
+          if (resp[0] !== 0x01) continue;      // not a response
+          if (resp[1] !== OP_SYNC) continue;   // an answer to something else
+          return true;
+        } catch(e){ /* retry */ }
+      }
+      return false;
+    };
+    return (await oneRound()) && (await oneRound());
   }
   async command(op, data, timeout){
     await this.write(slipEncode(packet(op, data)));

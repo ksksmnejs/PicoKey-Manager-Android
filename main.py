@@ -1029,7 +1029,14 @@ class PicoKeyApp(App):
         self.fw_info_text = i18n.t("fw_no_file")
 
     def fw_scan(self):
-        """Look for a board sitting in bootloader mode."""
+        """Look for a board sitting in bootloader mode.
+
+        An ESP32-S3 exposes a CDC interface whether or not its firmware is
+        running, so "has a serial interface" is not evidence of download mode.
+        The ESP candidate is therefore confirmed by a real ROM handshake before
+        it is offered - otherwise the app cheerfully reports a healthy board as
+        ready to flash and then fails (or worse, appears to succeed) later.
+        """
         def work():
             # Everything that touches the Java USB objects happens HERE, in
             # the worker thread. Only plain strings cross back to the UI, so
@@ -1038,26 +1045,39 @@ class PicoKeyApp(App):
             found = []
             for dev in devices:
                 kind = flasher.classify_bootloader(dev)
-                if kind:
-                    try:
-                        name = dev.label()
-                    except Exception:
-                        name = f"USB {dev.vid:04X}:{dev.pid:04X}"
-                    found.append((kind, dev, name))
+                if not kind:
+                    continue
+                try:
+                    name = dev.label()
+                except Exception:
+                    name = f"USB {dev.vid:04X}:{dev.pid:04X}"
+                # UF2 boards are a mass-storage drive: seeing the drive *is*
+                # the confirmation. ESP boards need the handshake.
+                confirmed = True
+                if kind == "esp32":
+                    confirmed = flasher.verify_download_mode(dev)
+                    if not confirmed:
+                        self.log(f"fw_scan: {name} has a serial interface but "
+                                 f"the ROM did not answer (firmware probably "
+                                 f"running, not in download mode)")
+                found.append((kind, dev, name, confirmed))
             return found
 
         def ok(found):
             self.busy = False
             self._fw_dev = None
-            if not found:
+            confirmed = [f for f in found if f[3]]
+            if not confirmed:
                 self.fw_dev_text = i18n.t("fw_no_bootloader")
                 self.log("fw_scan: nothing in bootloader mode")
+                if found:
+                    self.status_text = i18n.t("fw_scan_not_confirmed")
                 return
-            kind, dev, name = found[0]
+            kind, dev, name, _ = confirmed[0]
             self._fw_dev = dev
             label = i18n.t("fw_kind_uf2") if kind == "uf2" else i18n.t("fw_kind_esp32")
             self.fw_dev_text = i18n.t("fw_found_bootloader", kind=label, name=name)
-            self.log(f"fw_scan: {kind} -> {name}")
+            self.log(f"fw_scan: {kind} -> {name} (handshake ok)")
 
         self._worker(work, on_ok=ok, busy_text=i18n.t("scanning"))
 
