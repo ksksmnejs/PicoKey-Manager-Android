@@ -43,6 +43,17 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **The secure-boot confirmation only existed in the log**: the only gate before
+  burning OTP/eFuse was a checkbox on a crowded screen, and the warning was printed
+  to the log *after* the write - too late, and invisible unless you went looking.
+  Tapping the button now opens a dialog naming the slot and whether it locks, and
+  the write only runs after CONFIRM is typed
+
+- **No explanation when only the rescue channel was found**: firmware that fails to
+  start exposes just the rescue interface (and usually a dark LED), which looks like
+  a dead board. The scan page now spells out the recovery steps and says plainly
+  that the ESP32 ROM download mode cannot be bricked
+
 - **The APK was not signed with our key (every build got a new signature)**: the debug
   key in the repo was a PKCS12 container (keytool's default since JDK 9), but Gradle
   reads the debug keystore as JKS - when it cannot load the file it silently deletes it

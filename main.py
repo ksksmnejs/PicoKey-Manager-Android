@@ -1286,6 +1286,20 @@ class PicoKeyApp(App):
             btn.bind(on_release=lambda _b, c=ch: self.connect(c))
             box.add_widget(btn)
 
+        # A board running its firmware normally offers CCID and/or the FIDO HID
+        # interface. Seeing nothing but the rescue channel means the firmware is
+        # not up - which is alarming to hit with no explanation, but is also the
+        # one state that is always recoverable.
+        if all(getattr(ch, "kind", None) == "rescue" for ch in channels):
+            hint = Label(text=i18n.t("hint_rescue_only"),
+                         font_name=fonts.FONT_NAME, font_size="13sp",
+                         halign="left", valign="top",
+                         size_hint_y=None, height=150,
+                         color=(1, 0.86, 0.4, 1))
+            hint.bind(size=lambda *_a: setattr(hint, "text_size",
+                                              (hint.width - 12, None)))
+            box.add_widget(hint)
+
     def connect(self, channel):
         def work():
             kind, transport = detect.connect(channel)
@@ -1643,13 +1657,77 @@ class PicoKeyApp(App):
         self._worker(work, done, i18n.t("msg_probe_running"))
 
     def set_secure_boot(self):
-        def work():
-            ids = self.ids_of("device")
-            raw = (ids.bootkey.text or "").strip()
+        """Ask before burning anything.
+
+        This writes eFuse/OTP, which cannot be undone. The only gate used to be
+        a checkbox on a crowded screen, and the warning was printed to the log
+        *after* the write had already happened - too late to be a warning, and
+        invisible unless you went looking for it.
+        """
+        ids = self.ids_of("device")
+        raw = (ids.bootkey.text or "").strip()
+        try:
             slot = int(raw) if raw else 0
-            if not 0 <= slot <= 15:
-                raise ValueError(i18n.t("err_bootkey_range"))
-            lock = ids.chk_lock.state == "down"
+        except ValueError:
+            slot = -1
+        if not 0 <= slot <= 15:
+            self._done(i18n.t("err_bootkey_range"))
+            return
+
+        lock = ids.chk_lock.state == "down"
+        self._ask_secure_confirm(slot, lock)
+
+    def _ask_secure_confirm(self, slot, lock):
+        from kivy.uix.boxlayout import BoxLayout
+        from kivy.uix.button import Button
+        from kivy.uix.label import Label
+        from kivy.uix.popup import Popup
+        from kivy.uix.textinput import TextInput
+
+        body = BoxLayout(orientation="vertical", spacing=10, padding=12)
+
+        msg = Label(
+            text=i18n.t("dlg_secure_body", slot=slot,
+                        lock=i18n.t("lbl_yes") if lock else i18n.t("lbl_no")),
+            font_name=fonts.FONT_NAME, font_size="14sp",
+            halign="left", valign="top", size_hint_y=None, height=220,
+        )
+        msg.bind(size=lambda *_a: setattr(msg, "text_size", (msg.width - 12, None)))
+        body.add_widget(msg)
+
+        typed = TextInput(multiline=False, font_name=fonts.FONT_NAME,
+                          hint_text=i18n.t("dlg_secure_typed_hint"),
+                          size_hint_y=None, height=46, font_size="14sp")
+        body.add_widget(typed)
+
+        row = BoxLayout(orientation="horizontal", spacing=10,
+                        size_hint_y=None, height=52)
+        cancel = Button(text=i18n.t("btn_cancel"), font_name=fonts.FONT_NAME)
+        go = Button(text=i18n.t("dlg_secure_go"), font_name=fonts.FONT_NAME)
+        row.add_widget(cancel)
+        row.add_widget(go)
+        body.add_widget(row)
+
+        popup = Popup(title=i18n.t("dlg_secure_title"), content=body,
+                      size_hint=(0.94, 0.66), auto_dismiss=False)
+
+        def _cancel(_):
+            popup.dismiss()
+
+        def _go(_):
+            if (typed.text or "").strip().upper() != "CONFIRM":
+                typed.text = ""
+                typed.hint_text = i18n.t("dlg_secure_typed_bad")
+                return
+            popup.dismiss()
+            self._do_secure_boot(slot, lock)
+
+        cancel.bind(on_release=_cancel)
+        go.bind(on_release=_go)
+        popup.open()
+
+    def _do_secure_boot(self, slot, lock):
+        def work():
             try:
                 self._require_apdu().secure_boot(slot, lock)
             except SecureBootError as e:
