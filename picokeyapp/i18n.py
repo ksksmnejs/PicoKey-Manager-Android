@@ -291,6 +291,17 @@ STRINGS.update({
     "dlg_secure_go": {"zh": "确认写入", "en": "Write it"},
     "btn_cancel": {"zh": "取消", "en": "Cancel"},
 
+    # Shown when a board has a serial interface but the ROM never answered.
+    # Without this the scan just says "nothing found", which reads as a broken
+    # board when it actually means "you did not hold BOOT while plugging in".
+    "fw_scan_not_confirmed": {
+        "zh": "搜到了串口设备，但它没有回应下载握手——固件多半正在运行，"
+              "不在下载模式。请拔掉，按住 BOOT 键不放再插上，然后重新扫描。",
+        "en": "A serial device was found but it did not answer the download "
+              "handshake - the firmware is most likely running, not in download "
+              "mode. Unplug, hold BOOT while plugging back in, then scan again.",
+    },
+
     # Shown on the scan page when the board only offers its rescue interface,
     # which is what a half-configured or crashed firmware looks like.
     "hint_rescue_only": {

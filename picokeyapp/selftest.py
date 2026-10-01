@@ -747,6 +747,42 @@ def run() -> str:
         lines.append(_check("mismatch after resync names both ops", False,
                             type(e).__name__ + ": " + str(e)))
 
+    # f3) sync must not take a running firmware's log for a ROM reply.
+    # This is why the app said "fw_flash: done" on the same board where the web
+    # tool reported "sync failed": the old check accepted any frame starting
+    # with 0x01, and an ESP32-S3 keeps printing to that very same pipe.
+    class LogNoise:
+        """A firmware printing to USB Serial/JTAG, with an unlucky 0xC0 in it."""
+
+        def __init__(self):
+            self.data = bytearray(
+                b"I (1234) app: start\xc0\x01\x08\x00\x00\x00\x00\x00\x00\x00\xc0")
+
+        def write(self, data, timeout=None):
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            if not self.data:
+                return b""
+            chunk = bytes(self.data[:length])
+            del self.data[:length]
+            return chunk
+
+    lines.append(_check("running firmware is not mistaken for the ROM",
+                        flasher.EspLoader(LogNoise()).sync() is False,
+                        "reported a successful handshake"))
+
+    class RealRom:
+        def write(self, data, timeout=None):
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            return flasher.slip_encode(struct.pack("<BBHI", 0x01, 0x08, 0, 0))
+
+    lines.append(_check("a real ROM handshake still succeeds",
+                        flasher.EspLoader(RealRom()).sync() is True,
+                        "the board would never be detected"))
+
     lines.append("")
     lines.append("")
     lines.append(t("selftest_ui") + ":")

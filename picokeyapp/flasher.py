@@ -261,17 +261,39 @@ class EspLoader:
     # ------------------------------------------------------------ commands
 
     def sync(self, attempts: int = 5) -> bool:
-        """Send SYNC until the ROM answers or we run out of attempts."""
+        """Send SYNC until the ROM answers or we run out of attempts.
+
+        The response is checked properly - direction *and* opcode *and* length.
+        It used to accept anything whose first byte was 0x01, which made a
+        running firmware look like a ready bootloader: ESP32-S3 keeps printing
+        to the same USB Serial/JTAG pipe, so its log output was being read back
+        as a ROM reply and the app reported success while the web tool, which
+        does a real handshake, correctly said "sync failed". Same board, two
+        answers - the difference was who checked.
+        """
         payload = struct.pack("<I", 0) + b"\x07\x07\x12\x20" + b"\x55" * 32
-        for _ in range(attempts):
-            try:
-                self._write(slip_encode(self._packet(OP_SYNC, payload)))
-                resp = self._read_frame(timeout=500)
-                if resp and resp[0] == 0x01:       # direction: response
+
+        def one_round() -> bool:
+            for _ in range(attempts):
+                try:
+                    self._write(slip_encode(self._packet(OP_SYNC, payload)))
+                    resp = self._read_frame(timeout=500)
+                    if not resp or len(resp) < 8:
+                        continue
+                    if resp[0] != 0x01:            # not a response
+                        continue
+                    if resp[1] != OP_SYNC:         # an answer to something else
+                        continue
                     return True
-            except Exception:
-                continue
-        return False
+                except Exception:
+                    continue
+            return False
+
+        # Twice, deliberately. A ROM answers every time; a stray byte sequence
+        # in a firmware log that happens to look like one reply will not also
+        # look like a second. This is what separates "a real bootloader" from
+        # "noise we got lucky with".
+        return one_round() and one_round()
 
     def drain(self, timeout: int = 150) -> None:
         """Throw away anything the endpoint still holds from an earlier command.
@@ -369,6 +391,31 @@ def _now():
 # ---------------------------------------------------------------------------
 # High level entry point
 # ---------------------------------------------------------------------------
+
+def verify_download_mode(device) -> bool:
+    """Open the CDC interface and actually shake hands with the ROM.
+
+    classify_bootloader() only looks at whether a CDC data interface exists,
+    and an ESP32-S3 exposes one whether or not its firmware is running - so a
+    perfectly healthy board gets listed as "in download mode". This opens the
+    interface and syncs for real, which is the only question that matters.
+    """
+    intfs = device.interfaces_of_class(USB_CLASS_CDC_DATA)
+    if not intfs:
+        return False
+    conn = None
+    try:
+        conn = usbhost.Connection(device, intfs[0], force=True)
+        return EspLoader(conn).sync()
+    except Exception:
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 def flash_esp32(device, image: bytes, progress=None):
     """Open the CDC data interface of an ESP32 in download mode and flash it."""
