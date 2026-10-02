@@ -559,6 +559,27 @@ def _check_ins_table() -> list:
 
 def run() -> str:
     import inspect
+
+    # Module completeness, before anything is imported from this package: a
+    # missing file is the most common cause of "it crashes on open", and every
+    # check below is pointless until the imports resolve.
+    here = os.path.dirname(os.path.abspath(__file__))
+    _MAIN_IMPORTS = ["cbor_mini", "ccid", "ctap", "ctapcfg", "detect",
+                     "flasher", "fonts", "i18n", "usbhost", "uvcrypto", "saf"]
+    gone = [m for m in _MAIN_IMPORTS
+            if not os.path.exists(os.path.join(here, m + ".py"))]
+    if gone:
+        return "\n".join([
+            t("selftest_title"), "",
+            "  [FAIL] " + t("selftest_missing_modules", default="missing modules"),
+            "  - " + ", ".join(gone),
+            "",
+            t("selftest_hint_missing", default=
+              "Upload picokeyapp/%s.py as well. A module missing at import "
+              "time aborts before any window exists, which is what a crash on "
+              "open actually is." % gone[0]),
+        ])
+
     from . import ccid, ctap
     from .cbor_mini import loads, dumps
     from .pk import PicoKey, PhyData, PhyUsbItf, PhyLedDriver, PhyOpt, PhyCurve
