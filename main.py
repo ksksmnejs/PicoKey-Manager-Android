@@ -54,25 +54,6 @@ from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
-from picokeyapp import ctap, ctapcfg, detect, flasher, fonts, i18n, usbhost
-from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
-
-# Imported from the defining module rather than the package, because the
-# package __init__ is a separate file that has to be uploaded alongside this
-# one. If the two ever get out of step - a partial upload, say - importing
-# from the package raises ImportError at module load, and the app dies before
-# a single widget exists. That is the worst possible failure mode: a black
-# screen and no way to tell why.
-try:
-    from picokeyapp.pk.PicoKey import SecureBootError
-except ImportError:                                     # pragma: no cover
-    class SecureBootError(Exception):
-        """Fallback when PicoKey.py has not caught up with main.py yet."""
-
-_PLACEHOLDER = re.compile(r"@@([a-z_0-9]+)@@")
-_TOKEN = re.compile(r"\{\{([A-Z_0-9]+)\}\}")
-_SETTINGS_FILE = "ui_settings.json"
-
 # ---------------------------------------------------------------------------
 # Persistent log
 # ---------------------------------------------------------------------------
@@ -882,6 +863,44 @@ BoxLayout:
 """
 
 
+
+# ---------------------------------------------------------------------------
+# Imports that can be missing
+# ---------------------------------------------------------------------------
+# A half-finished upload leaves one module behind, and `from picokeyapp import
+# ...` runs at import time - before build(), before any window exists. The
+# process then dies with no dialog and no log, which is indistinguishable from
+# "the app is broken". Catching it here turns that into a screen naming the
+# missing file.
+_IMPORT_ERROR = None
+try:
+    from picokeyapp import ctap, ctapcfg, detect, flasher, fonts, i18n, usbhost
+    from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
+except Exception:
+    _IMPORT_ERROR = traceback.format_exc()
+    _write_log("IMPORT FAILURE\n" + _IMPORT_ERROR)
+
+    def _missing(name):
+        def _boom(*_a, **_k):
+            raise RuntimeError(name)
+        return _boom
+
+# Imported from the defining module rather than the package, because the
+# package __init__ is a separate file that has to be uploaded alongside this
+# one. If the two ever get out of step - a partial upload, say - importing
+# from the package raises ImportError at module load, and the app dies before
+# a single widget exists. That is the worst possible failure mode: a black
+# screen and no way to tell why.
+try:
+    from picokeyapp.pk.PicoKey import SecureBootError
+except ImportError:                                     # pragma: no cover
+    class SecureBootError(Exception):
+        """Fallback when PicoKey.py has not caught up with main.py yet."""
+
+_PLACEHOLDER = re.compile(r"@@([a-z_0-9]+)@@")
+_TOKEN = re.compile(r"\{\{([A-Z_0-9]+)\}\}")
+_SETTINGS_FILE = "ui_settings.json"
+
 class UserError(Exception):
     """An expected, explainable failure - wrong channel, missing permission.
 
@@ -1017,6 +1036,15 @@ class PicoKeyApp(App):
         broke. Showing the traceback on screen instead turns "it just closes"
         into something that can actually be reported and fixed.
         """
+        if _IMPORT_ERROR is not None:
+            # Nothing below can work without those modules, and no translation
+            # is available either - i18n may be one of the missing ones.
+            return self._crash_screen(
+                "缺少模块 / Missing modules:\n\n" + _IMPORT_ERROR
+                + "\n\n上传时漏了文件。请确认 picokeyapp/ 下有 "
+                  "ctapcfg.py 与 uvcrypto.py。\n"
+                  "A file is missing from the upload. Check that picokeyapp/ "
+                  "contains ctapcfg.py and uvcrypto.py.")
         _rotate_log()
         _install_excepthooks()
         _write_log("=== PicoKey Manager start %s ===\n" %
