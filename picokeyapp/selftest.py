@@ -10,6 +10,7 @@ Run from the shell:  python -m picokeyapp.selftest
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import struct
 import time
@@ -283,6 +284,71 @@ _NEEDS_CTAP = ("btn_wink", "btn_test_presence",
                # and leaving these enabled on the CCID channel produces an error
                # that looks like a bug rather than a wrong channel.
                "btn_toggle_always_uv", "btn_set_min_pin")
+
+
+def _check_official_engine():
+    """Checks on the optional esptool-js path in the single-file web flasher.
+
+    The HTML is only present in a source checkout, so a packaged APK skips
+    these rather than failing. Every rule here corresponds to a way this path
+    can silently do the wrong thing: the most important is the hard reset,
+    because skipping it leaves the chip in the bootloader, which looks exactly
+    like a failed flash (no LED, a single USB interface).
+    """
+    lines = []
+    here = os.path.dirname(os.path.abspath(__file__))   # .../picokeyapp
+    root = os.path.dirname(here)                        # project root
+    path = os.path.join(root, "picokey-commissioner.html")
+    if not os.path.exists(path):
+        lines.append("  [skip] official esptool-js engine in the web page "
+                     "(source not available in a built app)")
+        return lines
+    src = io.open(path, encoding="utf-8").read()
+
+    def has(needle):
+        return needle in src
+
+    lines.append(_check("web page defines its own MD5 (no second CDN)",
+                        has("function md5hex("),
+                        "" if has("function md5hex(") else "md5hex() is gone"))
+
+    two = has("esm.sh/esptool-js") and has("unpkg.com/esptool-js")
+    lines.append(_check("official engine tries a second CDN before giving up",
+                        two,
+                        "" if two else "only one CDN source is configured"))
+
+    imap = has('type="importmap"') and has('atob-lite')
+    lines.append(_check("import map covers esptool-js bare specifiers",
+                        imap,
+                        "" if imap else
+                        "pako/atob-lite are not mapped; the plain CDN build "
+                        "cannot load"))
+
+    reset = has('after("hard_reset")') or has("after('hard_reset')")
+    lines.append(_check("official engine hard-resets the chip after writing",
+                        reset,
+                        "" if reset else
+                        "no hard_reset: the chip stays in the bootloader and "
+                        "looks like a failed flash"))
+
+    baud = has("OFFICIAL_BAUD = 115200")
+    lines.append(_check("official engine uses a conservative baud rate",
+                        baud,
+                        "" if baud else "OFFICIAL_BAUD is not 115200"))
+
+    # A failed load must not strand the device: the modules are fetched
+    # before the device is handed over, and a failure falls through.
+    # Needle is the call site, not the dictionary entry: "officialFail" also
+    # appears in the i18n tables, so matching that alone would keep passing
+    # even after the fallback branch is deleted.
+    safe = has("const mod = await loadOfficial()") and has("t('officialFail')")
+    lines.append(_check("a failed engine load falls back to the built-in one",
+                        safe,
+                        "" if safe else
+                        "the official path has no fallback when loading fails"))
+
+    return lines
+
 
 
 def _check_channel_gating():
@@ -1416,6 +1482,52 @@ def run() -> str:
                         ok_ro and n_ro == 2,
                         f"succeeded={ok_ro}, sent {n_ro}x"))
 
+    # f6) FLASH_END has to ask the ROM to run the firmware. The argument reads
+    # backwards - esptool sends 0 to reboot and 1 to stay in the bootloader -
+    # and we used to send 1 always, so a freshly flashed board sat in download
+    # mode: no LED (the LED is driven by firmware) and one USB interface, which
+    # is indistinguishable from a flash that never happened.
+    def _flash_end_arg(reboot):
+        img = b"\xe9" + b"\x00" * 63          # one block at the default size
+        replies = [_ack(flasher.OP_SPI_ATTACH), _ack(flasher.OP_FLASH_BEGIN),
+                   _ack(flasher.OP_FLASH_DATA), _ack(flasher.OP_FLASH_END)]
+        conn = RecordingConn(replies)
+        loader = flasher.EspLoader(conn)
+        loader.drain = lambda *a, **k: None
+        loader.flash(img, reboot=reboot)
+        for w in conn.written:
+            frame = flasher.slip_decode(bytearray(w))[0]
+            # A data block goes out in 64-byte writes, so most of what was
+            # recorded is a partial frame. Only complete ones can be decoded.
+            if not frame:
+                continue
+            if frame[1] == flasher.OP_FLASH_END:
+                return struct.unpack_from("<I", frame, 8)[0]
+        return None
+
+    try:
+        arg_on = _flash_end_arg(True)
+        arg_off = _flash_end_arg(False)
+    except Exception as exc:
+        arg_on = arg_off = None
+        lines.append(_check("FLASH_END reboots the chip", False,
+                            f"{type(exc).__name__}: {exc}"))
+    if arg_on is not None:
+        lines.append(_check("FLASH_END reboots the chip", arg_on == 0,
+                            f"sent {arg_on}, expected 0"))
+        lines.append(_check("FLASH_END can be told to stay in the bootloader",
+                            arg_off == 1, f"sent {arg_off}, expected 1"))
+
+    # Rebooting in the middle of a multi-file write would drop the connection
+    # with images still queued, so only the last file may carry the flag.
+    import inspect as _inspect
+    _multi_src = _inspect.getsource(flasher.flash_esp32_multi)
+    _multi_ok = "reboot=reboot and idx == total" in _multi_src
+    lines.append(_check("multi-file flashing reboots on the last file only",
+                        _multi_ok,
+                        "" if _multi_ok else
+                        "the reboot flag is not tied to the last entry"))
+
     lines.append("")
     lines.append("")
     lines.extend(_check_ins_table())
@@ -1425,6 +1537,9 @@ def run() -> str:
     lines.append("")
     lines.append(t("selftest_ui") + ":")
     lines.extend(_check_channel_gating())
+
+    lines.append("")
+    lines.extend(_check_official_engine())
 
     lines.append("")
     if _FAILURES:

@@ -427,12 +427,19 @@ class EspLoader:
     # ------------------------------------------------------------ flashing
 
     def flash(self, image: bytes, offset: int = 0,
-              progress=None, block_size: int = 0x4000) -> None:
+              progress=None, block_size: int = 0x4000,
+              reboot: bool = True) -> None:
         """Write a raw ESP image to flash using the ROM's own commands.
 
         No flasher stub is uploaded: the ROM's FLASH_BEGIN/DATA/END commands
         are enough for a plain write, which keeps this independent of any
         binary blob we would otherwise have to ship.
+
+        `reboot` chooses what FLASH_END asks the ROM to do, and the argument
+        reads the opposite way to the flag: esptool sends 0 to reboot and 1 to
+        stay in the bootloader. We used to send 1 unconditionally, so a board
+        that had just been flashed sat in download mode - no LED, one USB
+        interface - and looked exactly like a failed flash.
         """
         total = len(image)
         blocks = (total + block_size - 1) // block_size
@@ -462,7 +469,8 @@ class EspLoader:
             if progress:
                 progress(i + 1, blocks)
 
-        self.command(OP_FLASH_END, struct.pack("<I", 1), timeout=4000)
+        self.command(OP_FLASH_END, struct.pack("<I", 0 if reboot else 1),
+                     timeout=4000)
 
     def erase_flash(self, timeout: int = 90000) -> None:
         """Erase the whole flash chip.
@@ -561,13 +569,18 @@ def erase_esp32(device, region: tuple = None) -> None:
             pass
 
 
-def flash_esp32(device, image: bytes, progress=None, erase_first=False):
+def flash_esp32(device, image: bytes, progress=None, erase_first=False,
+                reboot: bool = True):
     """Open the CDC data interface of an ESP32 in download mode and flash it.
 
     `erase_first` wipes the whole chip before writing. It has to happen on the
     same connection as the write: erasing through a second connection leaves the
     ROM free to answer late, and the erase reply is then read as the first
     flash command's - the "got op 0D, wanted D0" failure.
+
+    `reboot` tells the ROM to run the new firmware when the write finishes.
+    Leaving it off keeps the board in download mode, which is only useful when
+    more commands are to follow.
     """
     intfs = device.interfaces_of_class(USB_CLASS_CDC_DATA)
     if not intfs:
@@ -580,7 +593,7 @@ def flash_esp32(device, image: bytes, progress=None, erase_first=False):
                                   default="bootloader did not answer - is the board in download mode?"))
         if erase_first:
             loader.erase_flash()
-        loader.flash(image, progress=progress)
+        loader.flash(image, progress=progress, reboot=reboot)
     finally:
         try:
             conn.close()
@@ -633,13 +646,17 @@ def guess_offset(name: str, data: bytes = None) -> int:
     return 0x10000            # the application image
 
 
-def flash_esp32_multi(device, entries, progress=None, erase_first=False):
+def flash_esp32_multi(device, entries, progress=None, erase_first=False,
+                      reboot: bool = True):
     """Write several images at their own offsets, over one connection.
 
     `entries` is a list of (offset, image, name). Opening the interface once
     matters: re-syncing between files gives the ROM a chance to answer late and
     leaves the previous command's reply to be read as the next one's - the
     "got op 0D, wanted D0" failure.
+
+    `reboot` is applied to the last file only. Rebooting in the middle would
+    drop the connection while the remaining images are still queued.
 
     `progress` is called with (file_index, file_count, blocks_done, blocks_total).
     """
@@ -659,7 +676,8 @@ def flash_esp32_multi(device, entries, progress=None, erase_first=False):
             def _sub(done, blocks, _i=idx, _n=name):
                 if progress:
                     progress(_i, total, done, blocks)
-            loader.flash(image, offset=offset, progress=_sub)
+            loader.flash(image, offset=offset, progress=_sub,
+                         reboot=reboot and idx == total)
     finally:
         try:
             conn.close()
