@@ -1040,7 +1040,8 @@ def run() -> str:
     except flasher.FirmwareError as e:
         lines.append(_check("mismatch names both ops and says it stopped",
                             "08" in str(e) and "04" in str(e)
-                            and "未执行第二次" in str(e), str(e)))
+                            and ("未执行第二次" in str(e)
+                                 or "没有重复发送" in str(e)), str(e)))
     except Exception as e:
         lines.append(_check("mismatch names both ops and says it stopped", False,
                             type(e).__name__ + ": " + str(e)))
@@ -1282,6 +1283,51 @@ def run() -> str:
         and flasher.guess_offset("pico.bin", bytes(app_only)) == 0x10000,
         f"merged={flasher.guess_offset('pico.bin', bytes(merged)):#x}, "
         f"app={flasher.guess_offset('pico.bin', bytes(app_only)):#x}"))
+    class LateThenRight:
+        """The reply to the previous command turns up instead of this one's.
+
+        This is the real sequence on an ESP32-S3: SPI_ATTACH's answer arrives
+        after ERASE_FLASH went out. The erase is already running, so it cannot
+        be sent again - dropping the overdue frame and reading on is the only
+        thing that ends well.
+        """
+
+        def __init__(self):
+            self.written = []
+            self._reads = 0
+
+        def write(self, data, timeout=None):
+            self.written.append(bytes(data))
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            self._reads += 1
+            if self._reads == 1:
+                return flasher.slip_encode(
+                    struct.pack("<BBHI", 0x01, 0x0D, 0, 0))   # late attach
+            return flasher.slip_encode(
+                struct.pack("<BBHI", 0x01, 0xD0, 0, 0))       # the real answer
+
+        def close(self):
+            pass
+
+    late = LateThenRight()
+    ldr = flasher.EspLoader(late)
+    ldr.drain = lambda *a, **k: None
+    try:
+        ldr.command(flasher.OP_ERASE_FLASH, b"", timeout=500)
+        ok_late = True
+        detail = "erase completed"
+    except Exception as exc:
+        ok_late = False
+        detail = str(exc)
+    n_e = sum(1 for w in late.written
+              if flasher.slip_decode(bytearray(w))[0][1] == 0xD0)
+    lines.append(_check(
+        "an overdue reply is dropped instead of failing the erase in flight",
+        ok_late and n_e == 1,
+        f"succeeded={ok_late}, ERASE_FLASH sent {n_e}x, {detail}"))
+
     lines.append(_check(
         "erase-first runs on the same connection as the write",
         "erase_first" in inspect.getsource(flasher.flash_esp32_multi)

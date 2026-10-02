@@ -537,6 +537,10 @@ STRINGS.update({
     "fw_esp_timeout": {"zh": "bootloader 超时未响应", "en": "no response from the bootloader"},
     "fw_esp_short": {"zh": "响应被截断", "en": "truncated response"},
     "fw_esp_mismatch": {"zh": "响应不匹配（收到 op {got}，期望 {want}）—— 上一条命令的应答来晚了。该命令不能重复发送，已停止，未执行第二次", "en": "unexpected response (got op {got}, wanted {want}) - an earlier reply arrived late. This command must not be sent twice, so it was not repeated"},
+    "fw_esp_mismatch_stale": {
+        "zh": "响应不匹配（收到 op {got}，期望 {want}）—— 已丢弃迟到的应答并继续等待，仍没等到该命令的回应。命令没有重复发送，但设备可能已在执行",
+        "en": "unexpected response (got op {got}, wanted {want}) - overdue frames were dropped and no reply to this command arrived. It was not sent twice, but the board may already be running it",
+    },
     "fw_esp_mismatch_retried": {"zh": "响应不匹配（收到 op {got}，期望 {want}）—— 已自动重同步一次仍失败", "en": "unexpected response (got op {got}, wanted {want}) - still wrong after one resync"},
     "fw_esp_status": {"zh": "bootloader 返回状态 {code}", "en": "bootloader returned status {code}"},
     "fw_saf_failed": {"zh": "打不开文件管理器：{err}", "en": "could not open the file manager: {err}"},

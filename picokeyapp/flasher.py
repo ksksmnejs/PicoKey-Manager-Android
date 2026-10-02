@@ -356,7 +356,8 @@ class EspLoader:
             self._clean_pipe()
         self._write(slip_encode(self._packet(op, data, checksum)))
         try:
-            resp = self._read_frame(timeout=timeout)
+            resp = self._await_op(op, timeout) if op in self.NON_IDEMPOTENT_OPS \
+                else self._read_frame(timeout=timeout)
         except FirmwareError:
             # A timeout is not proof the command never ran - only that its reply
             # had not arrived yet. For an idempotent command, asking again costs
@@ -385,7 +386,7 @@ class EspLoader:
             # Saying "retried and still wrong" would be a lie for a command we
             # deliberately refused to resend, and it is the difference between
             # "the board is confused" and "we stopped before doing it twice".
-            key = ("fw_esp_mismatch" if op in self.NON_IDEMPOTENT_OPS
+            key = ("fw_esp_mismatch_stale" if op in self.NON_IDEMPOTENT_OPS
                    else "fw_esp_mismatch_retried")
             raise FirmwareError(t(key, got=f"{r_op:02X}", want=f"{op:02X}",
                                   default=f"unexpected response (got op {r_op:#02x}, "
@@ -396,6 +397,26 @@ class EspLoader:
             raise FirmwareError(t("fw_esp_status", code=status,
                                   default=f"bootloader returned status {status}"))
         return value, body
+
+    def _await_op(self, op: int, timeout: int = None,
+                  max_stale: int = 4) -> bytes:
+        """Read frames until one belongs to `op`, dropping overdue ones.
+
+        A command that was already sent cannot be unsent. While an erase runs
+        the ROM is busy for tens of seconds, and whatever reply was still in
+        flight from the previous command arrives first - reading it used to end
+        the operation right there, with the board erasing anyway and the app
+        reporting failure. For a command that must not go out twice, dropping
+        those frames and carrying on is the only correct answer.
+        """
+        stale = 0
+        while True:
+            resp = self._read_frame(timeout=timeout)
+            if len(resp) >= 8 and resp[0] == 0x01 and resp[1] == op:
+                return resp
+            stale += 1
+            if stale > max_stale:
+                return resp
 
     @staticmethod
     def _packet(op: int, data: bytes, checksum: int = None) -> bytes:
