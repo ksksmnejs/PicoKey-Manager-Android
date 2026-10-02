@@ -43,6 +43,9 @@ If the build fails the job stops early and no version number is consumed.
 
 ### Fixed
 
+- **Flashing and erasing read the previous command's overdue reply ("got op 0D, wanted D0")**: the handshake succeeded, yet the first real command read SPI_ATTACH's late answer. Three causes: the ROM banner was not cleared after sync; `flash()` did not clear the pipe after a failed SPI_ATTACH while `erase_flash()` did; and a timeout was treated as "the device never ran it", leaving the overdue reply for the next command. Now: the pipe is cleared after sync and before any non-idempotent command, an idempotent command is retried once after a timeout (safe, and it consumes the late reply), and `flash()` and `erase_flash()` share one cleanup path
+
+
 - **The self-test aborted on its first failure**: `_check` raised, so one run could only ever reveal one problem — fix it, run again, stop at the next one, which reads as "it fails forever". Failures are now collected and listed together at the end, so a single run shows everything
 
 - **"ERASE_FLASH went out 2 times" with no clue why**: that property lives in `flasher.py`, not here. Uploading only `selftest.py` makes the count 2 by construction, yet the message looked like a bug in the test. The guard is now checked first; when it is missing the test says plainly that the files are out of sync and to upload all of them, and skips the two counts
