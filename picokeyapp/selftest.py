@@ -347,6 +347,31 @@ def _check_official_engine():
                         "" if safe else
                         "the official path has no fallback when loading fails"))
 
+    # The flasher stub drops the stream on the ESP32-S3's native USB
+    # Serial/JTAG: flashing dies at the first command with "Invalid head of
+    # packet (0x45)" because the chip already rebooted and is printing its
+    # ROM log. Skipping it means main() must not upload one.
+    nostub = has("loader.runStub = async function(){ return loader; };")
+    lines.append(_check("the stub can be skipped (it dies on ESP32-S3 USB-JTAG)",
+                        nostub,
+                        "" if nostub else
+                        "runStub is never overridden: the stub upload cannot "
+                        "be skipped, which breaks ESP32-S3 native USB"))
+
+    wired = has('id="chkNoStub"') and has("flashWithOfficial(list, mod, skipStub)")
+    lines.append(_check("the skip-stub checkbox is wired to the engine call",
+                        wired,
+                        "" if wired else
+                        "chkNoStub exists but its value never reaches "
+                        "flashWithOfficial()"))
+
+    dirty = has("t('officialDirty')")
+    lines.append(_check("a failed official run warns that the board needs a replug",
+                        dirty,
+                        "" if dirty else
+                        "no warning that a failed stub run leaves the chip "
+                        "unusable until it is replugged"))
+
     return lines
 
 
