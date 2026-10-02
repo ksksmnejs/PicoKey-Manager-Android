@@ -69,14 +69,32 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
-    # You have triggered this workflow many times; older runs can sit in the
-    # queue in front of the new one and make it look "stuck". This keeps only
-    # the newest run per branch and cancels whatever is still queued/running.
-    concurrency:
-      group: build-apk-${{ github.ref }}
-      cancel-in-progress: true
+    # No job-level concurrency group on purpose. It used to carry
+    # `group: build-apk-${{ github.ref }}`, which contradicts the fixed group
+    # declared above this job: that one cancels across branches, this one only
+    # within a single ref, and having both makes the effective behaviour
+    # whichever GitHub applies last - not something anyone can reason about.
+    # The UV branch it was added for is gone, so the workflow-level group
+    # above is enough on its own.
 
     steps:
+      # Guard: this workflow publishes under the version it reads from
+      # CHANGELOG.md, and 'overwrite' is on by default. Run it with the branch
+      # selector pointed at anything other than main and it rebuilds that
+      # version from the other branch's code - replacing the APK main
+      # published with code main does not contain.
+      - name: Guard - main branch only
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          if [ "$REF" != "main" ]; then
+            echo "::error::This workflow publishes the main-branch release, but it is running on '$REF'."
+            echo "::error::It would rebuild the version from CHANGELOG.md using this branch's code and overwrite main's APK."
+            echo "::error::Switch the branch selector to 'main'. The UV branch was merged into main, so that workflow no longer exists."
+            exit 1
+          fi
+          echo "branch ok: $REF"
+
       - name: Checkout
         uses: actions/checkout@v4
 
