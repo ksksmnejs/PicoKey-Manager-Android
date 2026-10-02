@@ -296,7 +296,15 @@ class EspLoader:
         # in a firmware log that happens to look like one reply will not also
         # look like a second. This is what separates "a real bootloader" from
         # "noise we got lucky with".
-        return one_round() and one_round()
+        ok = one_round() and one_round()
+        if ok:
+            # The ESP32-S3 ROM prints a banner ("ESP-ROM:esp32s3-...") on the
+            # same USB Serial/JTAG pipe, and sync() deliberately skipped over
+            # frames that did not match. Whatever survived is now sitting in
+            # the buffer waiting to be read as the answer to the first real
+            # command. Throw it away before anything is sent.
+            self._clean_pipe(timeout=200)
+        return ok
 
     def drain(self, timeout: int = 150) -> None:
         """Throw away anything the endpoint still holds from an earlier command.
@@ -322,11 +330,43 @@ class EspLoader:
     NON_IDEMPOTENT_OPS = frozenset((OP_ERASE_FLASH, OP_ERASE_REGION,
                                     OP_FLASH_BEGIN, OP_FLASH_DATA, OP_FLASH_END))
 
+    def _clean_pipe(self, timeout: int = 150) -> None:
+        """Drop everything the endpoint still holds from an earlier command.
+
+        Both the buffer we have already read and whatever is still queued in the
+        device. Clearing only one of the two leaves the other to turn up as the
+        answer to the next command, which is what "got op 0D, wanted D0" is:
+        SPI_ATTACH timed out, we carried on, and its reply arrived late and was
+        read as the erase's answer.
+
+        Every caller used to do this by hand, and erase_flash() had it while
+        flash() did not - the inconsistency that made flashing fail with an
+        error that only made sense for erasing.
+        """
+        self._buf = bytearray()
+        self.drain(timeout=timeout)
+
     def command(self, op: int, data: bytes = b"", checksum: int = 0,
                 timeout: int = None, _retry: bool = True) -> tuple:
         """Send one command and return (value, body)."""
+        if op in self.NON_IDEMPOTENT_OPS:
+            # These cannot be resent, so a stale frame arriving late is not a
+            # retry opportunity - it is a failed command. Clear before sending
+            # rather than after discovering the mismatch.
+            self._clean_pipe()
         self._write(slip_encode(self._packet(op, data, checksum)))
-        resp = self._read_frame(timeout=timeout)
+        try:
+            resp = self._read_frame(timeout=timeout)
+        except FirmwareError:
+            # A timeout is not proof the command never ran - only that its reply
+            # had not arrived yet. For an idempotent command, asking again costs
+            # nothing and it consumes that late reply, instead of leaving it to
+            # be read as the answer to the next command. That is precisely how
+            # SPI_ATTACH's overdue reply ended up answering an ERASE_FLASH.
+            if _retry and op not in self.NON_IDEMPOTENT_OPS:
+                self._clean_pipe()
+                return self.command(op, data, checksum, timeout, _retry=False)
+            raise
         if len(resp) < 8:
             raise FirmwareError(t("fw_esp_short", default="truncated response"))
         direction, r_op = resp[0], resp[1]
@@ -381,7 +421,10 @@ class EspLoader:
             self.command(OP_SPI_ATTACH, struct.pack("<I", 0), timeout=4000)
         except FirmwareError:
             # Some ROMs answer with a non-zero status here but are still ready.
-            pass
+            # What must not survive is a reply that never arrived: it turns up
+            # later and gets read as the answer to FLASH_BEGIN, which then
+            # fails with an error naming the wrong operation.
+            self._clean_pipe()
 
         self.command(OP_FLASH_BEGIN,
                      struct.pack("<IIII", total, blocks, block_size, offset),
@@ -421,8 +464,7 @@ class EspLoader:
             # turns up later and gets read as the answer to the erase, which is
             # how "got op 0D, wanted D0" happens. Clear the pipe before sending
             # a command that cannot be sent twice.
-            self._buf = bytearray()
-            self.drain()
+            self._clean_pipe()
         self.command(OP_ERASE_FLASH, b"", timeout=timeout)
 
     def erase_region(self, offset: int, size: int, timeout: int = 60000) -> None:

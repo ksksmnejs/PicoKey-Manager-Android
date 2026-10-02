@@ -928,6 +928,73 @@ def run() -> str:
                          flasher.OP_FLASH_DATA, flasher.OP_FLASH_END),
                         f"ERASE_FLASH={flasher.OP_ERASE_FLASH:#04x}"))
 
+    # f4b) The pipe must be clean before the first real command. The ROM prints
+    # a banner on the same USB Serial/JTAG line, and sync() skips over frames
+    # that do not match, so whatever is left waits to be read back as the answer
+    # to SPI_ATTACH. This is the "bootloader did not answer" / "got op 0D,
+    # wanted D0" pair that showed up on a board that had actually synced fine.
+    class BannerConn(RecordingConn):
+        """Answers SYNC properly, but only after a banner has been printed."""
+
+        def __init__(self):
+            super().__init__([])
+            self.banner = b"ESP-ROM:esp32s3-20210327 Build:Mar 27 2021\r\n"
+            self.sync_seen = 0
+
+        def read(self, length=None, timeout=None):
+            if self.banner is not None:
+                b, self.banner = self.banner, None
+                return b
+            return _ack(flasher.OP_SYNC)
+
+    # What matters is that the *device* side is drained, not just the local
+    # buffer: slip_decode already skips leading junk, so a buffer-only check
+    # passes whether or not the cleanup runs. Count the drain instead.
+    bc = BannerConn()
+    ld_b = flasher.EspLoader(bc)
+    drained = []
+    ld_b.drain = lambda *a, **k: drained.append(1)
+    synced = ld_b.sync()
+    lines.append(_check("sync drains the device after the ROM banner",
+                        synced and len(drained) >= 1,
+                        f"synced={synced}, drain called {len(drained)}x"))
+
+    # f4c) A timeout is not the same as a refusal. For an idempotent command,
+    # asking again is free and it consumes the overdue reply instead of leaving
+    # it for the next command - which is what an erase would otherwise read.
+    class QuietConn(RecordingConn):
+        """Never answers; used to count how many times a command goes out."""
+
+        def read(self, length=None, timeout=None):
+            return b""
+
+    for label, op, want in (("an idempotent command is retried after a timeout",
+                             flasher.OP_SPI_ATTACH, 2),
+                            ("a destructive command is not retried on timeout",
+                             flasher.OP_ERASE_FLASH, 1)):
+        qc = QuietConn([])
+        qc.drain = lambda *a, **k: None
+        ld_q = flasher.EspLoader(qc)
+        ld_q.timeout = 60
+        try:
+            ld_q.command(op, b"", timeout=60)
+        except flasher.FirmwareError:
+            pass
+        n = sum(1 for w in qc.written
+                if flasher.slip_decode(bytearray(w))[0][1] == op)
+        lines.append(_check(label, n == want, f"sent {n}x, expected {want}x"))
+
+    # f4d) flash() must clear the pipe just like erase_flash() does. It did
+    # not, which is why the error surfaced during flashing while naming the
+    # erase opcode - the two paths had drifted apart.
+    import inspect
+    _f_src = inspect.getsource(flasher.EspLoader.flash)
+    _f_ok = "_clean_pipe" in _f_src
+    lines.append(_check("flash() clears the pipe after a failed SPI_ATTACH",
+                        _f_ok,
+                        "" if _f_ok else
+                        "flash() carries the failed reply over to FLASH_BEGIN"))
+
     # f5) A destructive command must never be retransmitted. The mismatch path
     # retries when a stale frame turns up, which is right for a read but not for
     # an erase: sending ERASE_FLASH a second time while the first is still
