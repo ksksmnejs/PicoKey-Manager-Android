@@ -133,6 +133,15 @@
   <div id="fileOut"></div>
 </div>
 
+<!-- ============ 2b. 多个文件与各自偏移 ============ -->
+<h2 data-i18n="secMulti">2b. 多个文件与各自偏移</h2>
+<div class="card">
+  <input type="file" id="extraInput" accept="*" style="display:none" onchange="onExtraFile(event)">
+  <label class="filebtn" for="extraInput" data-i18n="btnAddFile">再添加一个文件</label>
+  <div id="extraList"></div>
+  <div class="sub" data-i18n="hintMulti" style="margin-top:8px;white-space:pre-wrap"></div>
+</div>
+
 <!-- ============ 3. 刷写 ============ -->
 <h2 data-i18n="secFlash">3. 刷入固件</h2>
 <div class="card">
@@ -205,7 +214,7 @@
 /* Bump this every time the file changes. It is printed at the bottom of the
    page so you can tell at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
-const PAGE_VERSION = 'r6';
+const PAGE_VERSION = 'r7';
 
 let LANG = 'zh';
 const I18N = {
@@ -232,6 +241,12 @@ const I18N = {
     hintConnect:"让板子进入下载模式后再点上面的按钮。不同板子进入方式不同，请参考板子的说明。",
     reconnectTip:"若选择器一直为空，先拔插设备再点一次。",
     lblOffset:"写入偏移地址（十六进制）",
+    secMulti:"2b. 多个文件与各自偏移", btnAddFile:"再添加一个文件",
+    hintMulti:"ESP32-S3 需要三个文件，各自写在不同偏移：bootloader→0x0、分区表→0x8000、主程序→0x10000。\n只把主程序刷到 0x0，芯片会把它当 bootloader 加载而启动不了——灯也不会亮，因为灯是固件驱动的。\n选好文件后偏移会按文件名自动填，可以改。三个文件在一次连接内写完，不会中途重新握手。",
+    multiConfirm:"即将按下面的偏移写入 {n} 个文件：",
+    flashingFile:"正在写入第 {i}/{n} 个：{name} → {off}",
+    multiDone:"{n} 个文件已全部写入。现在可以重启板子。",
+    primaryFile:"（上面选的文件）", badOffset:"偏移地址不是有效的十六进制数",
     hintOffset:"PicoKeys 固件通常是 0。只有在你明确知道要写到别处时才改，填错会刷成砖（可救回：ROM 下载模式还在）。",
     flashWarn:"⚠️ 刷写路径未在真机上验证过。第一次建议先确认日志里的每一步，再真正执行。刷错通常可救回——ESP32 的 ROM 下载模式不会被刷掉。",
     tail1:"esptool ROM 协议为独立实现，不含上游代码",
@@ -282,7 +297,7 @@ const I18N = {
     mFlashFailTitle:"刷写失败",
     mFlashFailBody:"刷写过程中出错。\n\nESP32 通常可以救回：ROM 下载模式烧不掉，重新进入下载模式再刷一次即可。\n\n详情看日志里的具体报错。",
     // 页面内更新日志
-    changelogText:"2026-10-09\n· 本页改为 ESP32-S2 / S3 固件刷写工具\n· 实现 esptool ROM 协议（SLIP 组帧 + FLASH_BEGIN/DATA/END），不上传 flasher stub\n· 顶部如实说明：Chrome 屏蔽 CCID，本页无法配置运行中的设备\n· 移除「安全启动 / 安全锁」整节（浏览器做不到，留着只是误导）\n· 选文件不再限定 .bin，按内容识别格式\n· 浏览器不支持 WebUSB / 非 HTTPS 时恢复启动弹窗（之前只写进日志，容易滑过去就看不到）\n· 加禁止缓存的 meta、页面版本戳（r6）、「强制刷新」按钮，并自动比对 Pages 上的版本，\n  检测到旧页面时顶部提示\n· 选择设备失败时弹出排查指引，不再只显示“已取消”\n· 启动时自动复用上次已授权的设备\n\n更早\n· 原为 CCID 配置工具（因浏览器屏蔽 CCID 而无法工作）\n· 增加中英双语切换",
+    changelogText:"2026-10-09\n· 支持一次选多个文件并各自填偏移（ESP32-S3 需要 bootloader / 分区表 / 主程序 三个）\n· 本页改为 ESP32-S2 / S3 固件刷写工具\n· 实现 esptool ROM 协议（SLIP 组帧 + FLASH_BEGIN/DATA/END），不上传 flasher stub\n· 顶部如实说明：Chrome 屏蔽 CCID，本页无法配置运行中的设备\n· 移除「安全启动 / 安全锁」整节（浏览器做不到，留着只是误导）\n· 选文件不再限定 .bin，按内容识别格式\n· 浏览器不支持 WebUSB / 非 HTTPS 时恢复启动弹窗（之前只写进日志，容易滑过去就看不到）\n· 加禁止缓存的 meta、页面版本戳（r6）、「强制刷新」按钮，并自动比对 Pages 上的版本，\n  检测到旧页面时顶部提示\n· 选择设备失败时弹出排查指引，不再只显示“已取消”\n· 启动时自动复用上次已授权的设备\n\n更早\n· 原为 CCID 配置工具（因浏览器屏蔽 CCID 而无法工作）\n· 增加中英双语切换",
   },
   en: {
     title:"PicoKey Web Flasher", subtitle:"Flash ESP32-S2 / S3 firmware over WebUSB · no app · no compiling",
@@ -307,6 +322,12 @@ const I18N = {
     hintConnect:"Put the board into download mode, then tap the button. How you do that differs per board — check the board's own documentation.",
     reconnectTip:"If the chooser keeps coming up empty, unplug and replug, then tap again.",
     lblOffset:"Write offset (hex)",
+    secMulti:"2b. Several files, each with its own offset", btnAddFile:"Add another file",
+    hintMulti:"An ESP32-S3 needs three images at three offsets: bootloader at 0x0, partition table at 0x8000, app at 0x10000.\nFlashing only the app to 0x0 makes the chip load it as a bootloader and it never starts — the LED stays dark too, because the LED is driven by firmware.\nOffsets are guessed from the file name and can be edited. All files are written over one connection.",
+    multiConfirm:"About to write {n} files at these offsets:",
+    flashingFile:"Writing file {i}/{n}: {name} → {off}",
+    multiDone:"All {n} files written. The board can be restarted now.",
+    primaryFile:"(file picked above)", badOffset:"The offset is not a valid hex number",
     hintOffset:"Usually 0 for PicoKeys firmware. Only change it if you know exactly why — a wrong offset bricks the flash until you re-flash (recoverable: the ROM download mode survives).",
     flashWarn:"⚠️ This flashing path has NOT been verified on real hardware. For the first run, read the log and confirm each step before committing. A bad flash is usually recoverable — the ESP32 ROM download mode cannot be erased.",
     tail1:"esptool ROM protocol, implemented independently",
@@ -355,7 +376,7 @@ const I18N = {
     mWrongModeBody:"Connected, but the handshake failed — the bootloader did not answer.\n\nThat usually means the board is not in download mode: it is running firmware normally (which uses CCID and could not be claimed at all), or it is running something else.\n\nPut it into download mode and try again; the method differs per board, so check the board's documentation.",
     mFlashFailTitle:"Flash failed",
     mFlashFailBody:"Something went wrong while flashing.\n\nAn ESP32 is usually recoverable: the ROM download mode cannot be erased, so re-enter download mode and flash again.\n\nSee the log for the exact error.",
-    changelogText:"2026-10-09\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when your copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· Previously authorised devices are reused on load\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
+    changelogText:"2026-10-09\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when your copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· Previously authorised devices are reused on load\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
   }
 };
 
@@ -452,6 +473,12 @@ let device = null;
 let epIn = null, epOut = null, ifaceNum = null;
 let fwData = null;      // Uint8Array
 let fwReady = false;    // recognised as an ESP image
+// Extra images, each with its own offset. ESP32-S3 needs three of them
+// (bootloader, partition table, app) and they MUST go over one connection:
+// re-opening the device between files lets a late reply from the previous
+// file be read as the answer to the next one.
+let extraFiles = [];    // [{name, data, offset}]
+let primaryName = '';
 
 /* Interface classes Chrome refuses to hand to a page. From the WebUSB spec,
    added in Chrome 67 after CVE-2018-6125 (WebUSB used to bypass the FIDO U2F
@@ -595,7 +622,7 @@ function updateFlashGate(){
   const hasDev = !!device;
   const e = document.getElementById('btnErase');
   if (e) e.disabled = !hasDev;
-  document.getElementById('btnFlash').disabled = !(hasDev && fwReady);
+  document.getElementById('btnFlash').disabled = !(hasDev && (fwReady || extraFiles.length));
 }
 
 /* --------------------------- SLIP + ROM protocol --------------------------- */
@@ -814,16 +841,94 @@ async function onFile(ev){
       fwReady ? 'ok' : 'warn');
   if (!fwReady) log(msg.replace(/\n/g,' '), 'warn');
   document.getElementById('fileLabel').textContent = f.name;
+  primaryName = f.name;
   updateFlashGate();
+}
+
+/* --------------------- extra images, each with an offset --------------------- */
+// ESP32-S3 boots from three images at three different offsets. Guessing from
+// the file name saves typing, and getting it wrong is the single most common
+// reason a freshly flashed board never comes up.
+function guessOffset(name){
+  const n = (name || '').toLowerCase();
+  if (n.includes('boot')) return '0';
+  if (n.includes('partition')) return '8000';
+  return '10000';
+}
+function collectImages(){
+  const list = [];
+  if (fwReady && fwData){
+    const raw = (document.getElementById('offset').value || '').trim() || '0';
+    const off = parseInt(raw, 16);
+    list.push({
+      name: primaryName || t('primaryFile'),
+      data: fwData,
+      offset: isNaN(off) ? 0 : off
+    });
+  }
+  extraFiles.forEach(e => list.push({ name: e.name, data: e.data, offset: e.offset }));
+  return list;
+}
+function renderExtra(){
+  const box = document.getElementById('extraList');
+  if (!extraFiles.length){ box.innerHTML = ''; updateFlashGate(); return; }
+  box.innerHTML = extraFiles.map((e, i) =>
+    '<div class="kv" style="margin-top:8px">' +
+      '<span style="word-break:break-all">' + e.name +
+        ' · ' + (e.data.length / 1024).toFixed(1) + ' KB</span>' +
+      '<span><input type="text" class="offinput" data-idx="' + i + '" value="' +
+        e.offset.toString(16) + '" inputmode="text" style="width:84px">' +
+      ' <button onclick="removeExtra(' + i + ')">✕</button></span>' +
+    '</div>').join('');
+  box.querySelectorAll('.offinput').forEach(inp => {
+    inp.onchange = () => {
+      const i = parseInt(inp.getAttribute('data-idx'), 10);
+      const v = parseInt((inp.value || '').trim(), 16);
+      if (isNaN(v) || v < 0){
+        log(t('badOffset'), 'err');
+        inp.value = extraFiles[i].offset.toString(16);
+        return;
+      }
+      extraFiles[i].offset = v;
+      log(e0name(i) + ' -> 0x' + v.toString(16), 'dim');
+    };
+  });
+  updateFlashGate();
+}
+function e0name(i){ return extraFiles[i] ? extraFiles[i].name : ('#' + i); }
+async function onExtraFile(ev){
+  const f = ev.target.files && ev.target.files[0];
+  ev.target.value = '';              // let the same file be picked again
+  if (!f) return;
+  const buf = new Uint8Array(await f.arrayBuffer());
+  const kind = sniff(buf);
+  extraFiles.push({ name: f.name, data: buf, offset: parseInt(guessOffset(f.name), 16) });
+  log(t('filePicked') + ': ' + f.name + ' — ' + t('fileSize') + ' ' + buf.length + ' B' +
+      (kind === 'esp' ? '' : ' [' + kind + ']'), kind === 'esp' ? 'ok' : 'warn');
+  if (kind !== 'esp') log(t('sniffUnknown'), 'warn');
+  renderExtra();
+}
+function removeExtra(i){
+  const gone = extraFiles.splice(i, 1)[0];
+  if (gone) log('removed ' + gone.name, 'dim');
+  renderExtra();
 }
 
 /* --------------------------- flash --------------------------- */
 async function doFlash(){
   if (!device){ log(t('noDevice'),'warn'); return; }
-  if (!fwReady){ log(t('noFile'),'warn'); return; }
-  const offRaw = document.getElementById('offset').value.trim() || '0';
-  const offset = parseInt(offRaw, 16);
-  if (isNaN(offset) || offset < 0){ log('bad offset','err'); return; }
+  const list = collectImages();
+  if (!list.length){ log(t('noFile'),'warn'); return; }
+  for (const im of list){
+    if (!isFinite(im.offset) || im.offset < 0){ log(t('badOffset'),'err'); return; }
+  }
+  // More than one image means a full ESP32-S3 restore; say what is about to
+  // happen before anything is written.
+  if (list.length > 1 &&
+      !confirm(t('multiConfirm', {n: list.length}) + '\n\n' +
+               list.map(im => '0x' + im.offset.toString(16) + '  ' + im.name).join('\n'))){
+    return;
+  }
 
   const btn = document.getElementById('btnFlash');
   const bar = document.getElementById('bar');
@@ -838,14 +943,26 @@ async function doFlash(){
     log(t('syncing'),'dim');
     if (!await loader.sync()) { showModal('mWrongModeTitle','mWrongModeBody','err'); throw new Error('sync failed'); }
     log('sync ok','ok');
-    const n = await loader.flash(fwData, offset, (i, total)=>{
-      inner.style.width = Math.round(i*100/total) + '%';
-      ptext.textContent = t('flashProgress',{i, n:total});
-      if (i===total || i%16===0) log(t('flashProgress',{i,n:total}),'dim');
-    });
-    inner.style.width = '100%';
-    log(t('flashOk',{n}),'ok');
-    showRawModal(t('flashOkTitle'), t('flashOk',{n}), 'ok');
+    // One sync, then every image over the same connection. Re-syncing between
+    // files lets a late reply from the previous one be read as the next answer.
+    let written = 0;
+    for (let k = 0; k < list.length; k++){
+      const im = list[k];
+      log(t('flashingFile', {
+        i: k + 1, n: list.length, name: im.name, off: '0x' + im.offset.toString(16)
+      }), 'dim');
+      const n = await loader.flash(im.data, im.offset, (i, total)=>{
+        inner.style.width = Math.round(i*100/total) + '%';
+        ptext.textContent = t('flashProgress',{i, n:total});
+        if (i===total || i%16===0) log(t('flashProgress',{i,n:total}),'dim');
+      });
+      written += n;
+      inner.style.width = '100%';
+      log(im.name + ' — ' + t('flashOk',{n}), 'ok');
+    }
+    log(t('flashOk',{n: written}),'ok');
+    if (list.length > 1) log(t('multiDone',{n: list.length}),'ok');
+    showRawModal(t('flashOkTitle'), t('flashOk',{n: written}), 'ok');
   } catch(e){
     log('flash failed: ' + e.message, 'err');
     showModal('mFlashFailTitle','mFlashFailBody','err');
