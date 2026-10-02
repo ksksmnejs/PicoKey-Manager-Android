@@ -71,6 +71,26 @@ _log_lock = threading.Lock()
 _log_started = False
 
 
+def _external_dir() -> str:
+    """A folder a file manager can reach, or "".
+
+    `user_data_dir` on Android is /data/data/<pkg>/files, which the app owns
+    and nothing else can read - a log written only there cannot be got off the
+    phone. The app-specific external folder needs no permission and *is*
+    browsable, so the log is written to both.
+    """
+    try:
+        from kivy.utils import platform as _pf
+        if _pf != "android":
+            return ""
+        from jnius import autoclass
+        ctx = autoclass("org.kivy.android.PythonActivity").mActivity
+        path = ctx.getExternalFilesDir(None)
+        return path.getAbsolutePath() if path else ""
+    except Exception:
+        return ""
+
+
 def _log_dir() -> str:
     """Where the log file lives, or "" when there is nowhere to write."""
     try:
@@ -89,6 +109,22 @@ def _log_dir() -> str:
     return folder
 
 
+def _log_targets() -> list:
+    """Every path the log is written to, most reachable first."""
+    out = []
+    ext = _external_dir()
+    if ext:
+        try:
+            os.makedirs(ext, exist_ok=True)
+            out.append(os.path.join(ext, _LOG_FILE))
+        except Exception:
+            pass
+    primary = _log_path()
+    if primary:
+        out.append(primary)
+    return out
+
+
 def _log_path() -> str:
     folder = _log_dir()
     return os.path.join(folder, _LOG_FILE) if folder else ""
@@ -96,45 +132,46 @@ def _log_path() -> str:
 
 def _rotate_log():
     """Start a fresh file, keeping the previous run as .1."""
-    path = _log_path()
-    if not path:
-        return
-    try:
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            prev = os.path.join(os.path.dirname(path), _LOG_PREV)
-            if os.path.exists(prev):
-                os.remove(prev)
-            os.replace(path, prev)
-    except Exception:
-        pass
+    for path in _log_targets():
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                prev = os.path.join(os.path.dirname(path), _LOG_PREV)
+                if os.path.exists(prev):
+                    os.remove(prev)
+                os.replace(path, prev)
+        except Exception:
+            pass
 
 
 def _write_log(text: str):
     """Append to the log file. Never raises - logging must not cause a crash."""
-    path = _log_path()
-    if not path:
+    targets = _log_targets()
+    if not targets:
         return
     with _log_lock:
-        try:
-            # Trim first: without this a long flashing session grows the file
-            # without bound and the phone eventually refuses the write.
+        for path in targets:
             try:
-                if os.path.exists(path) and os.path.getsize(path) > _LOG_MAX:
-                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                        kept = fh.read()[-_LOG_MAX // 2:]
-                    with open(path, "w", encoding="utf-8") as fh:
-                        fh.write(kept)
-            except Exception:
-                pass
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(text)
-                fh.flush()
+                # Trim first: without this a long flashing session grows the
+                # file without bound and the phone eventually refuses the write.
                 try:
-                    os.fsync(fh.fileno())
+                    if (os.path.exists(path)
+                            and os.path.getsize(path) > _LOG_MAX):
+                        with open(path, "r", encoding="utf-8",
+                                  errors="replace") as fh:
+                            kept = fh.read()[-_LOG_MAX // 2:]
+                        with open(path, "w", encoding="utf-8") as fh:
+                            fh.write(kept)
                 except Exception:
                     pass
-        except Exception:
-            pass
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(text)
+                    fh.flush()
+                    try:
+                        os.fsync(fh.fileno())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
 
 def _stamp() -> str:
@@ -841,6 +878,11 @@ BoxLayout:
         font_size: '20sp'
         size_hint_y: None
         height: dp(36)
+    InfoLabel:
+        # Where to find the file, since /data/data/... cannot be opened from a
+        # file manager and "the log is saved" is useless without that.
+        text: app.log_path_text
+        font_size: '11sp'
     ScrollView:
         Label:
             id: logview
@@ -973,6 +1015,12 @@ class PicoKeyApp(App):
     status_text = StringProperty("")
     device_text = StringProperty("")
     log_text = StringProperty("")
+    log_path_text = StringProperty("")
+
+    def _refresh_log_path(self):
+        paths = [p for p in _log_targets()]
+        self.log_path_text = (i18n.t("log_file_at") + " " + paths[0]
+                              if paths else "")
     secure_text = StringProperty("")
     curves_text = StringProperty("")
     # Extra top inset (Kivy dp) so content clears the Android status bar.
@@ -1045,6 +1093,7 @@ class PicoKeyApp(App):
                   "ctapcfg.py 与 uvcrypto.py。\n"
                   "A file is missing from the upload. Check that picokeyapp/ "
                   "contains ctapcfg.py and uvcrypto.py.")
+        self._refresh_log_path()
         _rotate_log()
         _install_excepthooks()
         _write_log("=== PicoKey Manager start %s ===\n" %
