@@ -13,7 +13,7 @@ source.exclude_dirs = tests,docs,.github,tools,build,bin,.buildozer,__pycache__
 # release tag from it (v0.2.0 here), and it refuses to overwrite an existing
 # tag unless you explicitly ask - so raising this number is what actually
 # preserves earlier versions in Releases.
-version = 0.2.3
+version = 0.3.0
 
 # python3 + kivy pull in pyjnius by themselves; cryptography/pycvc are NOT
 # listed on purpose (they would need a Rust toolchain for the modern

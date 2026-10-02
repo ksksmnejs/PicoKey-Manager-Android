@@ -36,7 +36,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
+import time
 import traceback
 
 from kivy.app import App
@@ -49,9 +51,10 @@ from kivy.properties import (BooleanProperty, ListProperty, NumericProperty,
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen, ScreenManager
+from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
-from picokeyapp import ctap, detect, flasher, fonts, i18n, usbhost
+from picokeyapp import ctap, ctapcfg, detect, flasher, fonts, i18n, usbhost
 from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
 
 # Imported from the defining module rather than the package, because the
@@ -69,6 +72,124 @@ except ImportError:                                     # pragma: no cover
 _PLACEHOLDER = re.compile(r"@@([a-z_0-9]+)@@")
 _TOKEN = re.compile(r"\{\{([A-Z_0-9]+)\}\}")
 _SETTINGS_FILE = "ui_settings.json"
+
+# ---------------------------------------------------------------------------
+# Persistent log
+# ---------------------------------------------------------------------------
+# The in-memory log dies with the process, which is exactly when it is needed:
+# a crash on launch, or a crash while flashing, leaves nothing to look at. So
+# every line also goes to a file, flushed immediately, and uncaught exceptions
+# are written there by the hooks below before the process goes away.
+#
+# Two files are kept: the current one and the previous run's, so a crash that
+# happens on startup does not destroy the log of the run that came before it.
+_LOG_FILE = "picokey.log"
+_LOG_PREV = "picokey.log.1"
+_LOG_MAX = 512 * 1024
+_log_lock = threading.Lock()
+_log_started = False
+
+
+def _log_dir() -> str:
+    """Where the log file lives, or "" when there is nowhere to write."""
+    try:
+        from kivy.app import App
+        app = App.get_running_app()
+        if app is not None:
+            folder = app.user_data_dir
+        else:
+            folder = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        folder = os.path.dirname(os.path.abspath(__file__))
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception:
+        return ""
+    return folder
+
+
+def _log_path() -> str:
+    folder = _log_dir()
+    return os.path.join(folder, _LOG_FILE) if folder else ""
+
+
+def _rotate_log():
+    """Start a fresh file, keeping the previous run as .1."""
+    path = _log_path()
+    if not path:
+        return
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            prev = os.path.join(os.path.dirname(path), _LOG_PREV)
+            if os.path.exists(prev):
+                os.remove(prev)
+            os.replace(path, prev)
+    except Exception:
+        pass
+
+
+def _write_log(text: str):
+    """Append to the log file. Never raises - logging must not cause a crash."""
+    path = _log_path()
+    if not path:
+        return
+    with _log_lock:
+        try:
+            # Trim first: without this a long flashing session grows the file
+            # without bound and the phone eventually refuses the write.
+            try:
+                if os.path.exists(path) and os.path.getsize(path) > _LOG_MAX:
+                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        kept = fh.read()[-_LOG_MAX // 2:]
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(kept)
+            except Exception:
+                pass
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+def _stamp() -> str:
+    return time.strftime("%H:%M:%S")
+
+
+def _install_excepthooks():
+    """Send uncaught exceptions to the log file.
+
+    threading.excepthook matters as much as sys.excepthook: everything that
+    talks to the device runs on a worker thread, and an exception there used to
+    vanish - the thread died, the UI sat there, and the log had nothing.
+    """
+    def _hook(exc_type, exc, tb):
+        try:
+            import traceback as _tb
+            _write_log("".join(_tb.format_exception(exc_type, exc, tb)))
+        except Exception:
+            pass
+
+    def _sys_hook(exc_type, exc, tb):
+        _hook(exc_type, exc, tb)
+        if sys.__excepthook__ is not None:
+            sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _sys_hook
+
+    try:
+        def _thread_hook(args):
+            try:
+                _hook(args.exc_type, args.exc_value, args.exc_traceback)
+            except Exception:
+                pass
+        threading.excepthook = _thread_hook
+    except Exception:
+        pass
 
 # (i18n key, bit value) - must match PhyCurve in picokeyapp/pk/PhyData.py.
 CURVES = [
@@ -288,8 +409,53 @@ BoxLayout:
                 font_size: '14sp'
 
             SectionLabel:
+                text: '@@fw_sec_multi@@'
+            InfoLabel:
+                text: '@@fw_multi_hint@@'
+                font_size: '13sp'
+            GridLayout:
+                id: fw_files
+                cols: 1
+                size_hint_y: None
+                height: self.minimum_height
+                spacing: dp(6)
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                MenuButton:
+                    text: '@@fw_add_file@@'
+                    on_release: app.fw_pick()
+                MenuButton:
+                    text: '@@fw_guess_layout@@'
+                    on_release: app.fw_guess_offsets()
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                MenuButton:
+                    text: '@@fw_clear_files@@'
+                    on_release: app.fw_clear_files()
+
+            SectionLabel:
                 text: '@@fw_sec_write@@'
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                ToggleButton:
+                    id: fw_erase_first
+                    text: '@@fw_erase_first@@'
+                    font_name: 'AppFont'
+                    font_size: '13sp'
+                    state: 'normal'
+                    halign: 'center'
+                    text_size: self.size
+            InfoLabel:
+                text: '@@fw_erase_first_hint@@'
+                font_size: '12sp'
             DangerButton:
+                id: btn_flash_all
                 text: '@@fw_flash_esp@@'
                 on_release: app.fw_flash()
             MenuButton:
@@ -616,6 +782,44 @@ BoxLayout:
                 text: '@@btn_test_presence@@'
                 disabled: app.busy or app.blocked_ctap
                 on_release: app.test_presence()
+
+            SectionLabel:
+                text: '@@sec_uv@@'
+            InfoLabel:
+                text: '@@uv_explain@@'
+                font_size: '13sp'
+            InfoLabel:
+                id: lbl_uv_state
+                text: app.uv_state_text
+                font_size: '13sp'
+            BoxLayout:
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(6)
+                Label:
+                    text: '@@uv_pin@@'
+                    size_hint_x: 0.3
+                    font_size: '13sp'
+                    halign: 'left'
+                    valign: 'middle'
+                    text_size: self.size
+                TextInput:
+                    id: inp_pin
+                    size_hint_x: 0.7
+                    font_size: '14sp'
+                    multiline: False
+                    password: True
+                    hint_text: '@@uv_pin_hint@@'
+            DangerButton:
+                id: btn_toggle_always_uv
+                text: '@@btn_toggle_always_uv@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.toggle_always_uv()
+            DangerButton:
+                id: btn_set_min_pin
+                text: '@@btn_set_min_pin@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.ask_set_min_pin()
             MenuButton:
                 id: btn_reboot
                 text: '@@btn_reboot@@'
@@ -691,6 +895,7 @@ class UserError(Exception):
 # them costs screen space and buys nothing, so _fail() skips it for these.
 QUIET_ERRORS = (
     UserError,
+    ctapcfg.ConfigError,
     SecureBootError,
     flasher.FirmwareError,
     ctap.CTAPError,
@@ -768,6 +973,7 @@ class PicoKeyApp(App):
     blocked_apdu = BooleanProperty(False)
     blocked_ctap = BooleanProperty(False)
     channel_hint = StringProperty("")
+    uv_state_text = StringProperty("")
     connected = False
 
     def __init__(self, **kwargs):
@@ -789,6 +995,12 @@ class PicoKeyApp(App):
         self._fw_data = None
         self._fw_dev = None
         self._fw_kind = None
+        # Multi-image flashing: a list of {"name", "data", "offset"} dicts.
+        # Empty means the plain single-file path, which stays the default.
+        self._fw_files = []
+        # authenticatorGetInfo of the current CTAP connection, kept so the UV
+        # section can show alwaysUv without another round trip to the device.
+        self._ctap_info = None
         # Log lines are buffered here and flushed on the main thread; see log().
         self._log_lock = threading.Lock()
         self._log_pending = []
@@ -805,10 +1017,18 @@ class PicoKeyApp(App):
         broke. Showing the traceback on screen instead turns "it just closes"
         into something that can actually be reported and fixed.
         """
+        _rotate_log()
+        _install_excepthooks()
+        _write_log("=== PicoKey Manager start %s ===\n" %
+                   time.strftime("%Y-%m-%d %H:%M:%S"))
         try:
             return self._build_impl()
         except Exception:
-            return self._crash_screen(traceback.format_exc())
+            detail = traceback.format_exc()
+            # The crash screen shows it, but only until the app is dismissed.
+            # Writing it too means the reason survives the restart.
+            _write_log("STARTUP FAILURE\n" + detail)
+            return self._crash_screen(detail)
 
     @staticmethod
     def _crash_screen(detail: str):
@@ -1018,8 +1238,10 @@ class PicoKeyApp(App):
         So the text is queued here and appended from the main thread, the same
         way the keepalive callback already does it.
         """
+        line = str(msg)
+        _write_log("[%s] %s\n" % (_stamp(), line))
         with self._log_lock:
-            self._log_pending.append(str(msg))
+            self._log_pending.append(line)
         Clock.schedule_once(self._flush_log)
 
     def _flush_log(self, _dt):
@@ -1046,6 +1268,8 @@ class PicoKeyApp(App):
     def _fw_reset(self):
         self._fw_data = None
         self._fw_kind = None
+        self._fw_files = []
+        self._render_fw_files()
         self.fw_info_text = i18n.t("fw_no_file")
 
     def fw_scan(self):
@@ -1133,7 +1357,7 @@ class PicoKeyApp(App):
             name = saf.display_name(uri)
             if name:
                 self.log(f"fw_pick: {name} ({len(data)} bytes)")
-            self._fw_accept(data)
+            self._fw_accept(data, name=name or "")
 
         try:
             saf.open_picker(on_result)
@@ -1167,9 +1391,24 @@ class PicoKeyApp(App):
         chooser.bind(on_submit=_picked)
         popup.open()
 
-    def _fw_accept(self, data: bytes):
+    def _fw_accept(self, data: bytes, name: str = ""):
         """Store a firmware image and describe it."""
         self._fw_data = data
+        # Every pick is appended, so picking bootloader, partition table and
+        # app one after another gives a three-image flash. A single pick still
+        # works: fw_flash() falls back to the plain path when the list holds
+        # one file, which is the same thing written at offset 0.
+        self._fw_files.append({
+            "name": name or f"file{len(self._fw_files) + 1}",
+            "data": data,
+            # The first file keeps offset 0: a single combined image is written
+            # at the start of flash, and silently moving it to 0x10000 would
+            # break the case that used to work. Later files are guessed from
+            # their names, and "fill offsets" re-guesses all of them.
+            "offset": (0 if not self._fw_files
+                       else flasher.guess_offset(name, data)),
+        })
+        self._render_fw_files()
         info = flasher.sniff(data)
         self._fw_kind = info["kind"]
         lines = [f"{i18n.t('fw_kind')}: {info['detail']}",
@@ -1181,11 +1420,99 @@ class PicoKeyApp(App):
                 lines.append("(UF2 blocks look damaged)")
         if info.get("chip"):
             lines.append(f"{i18n.t('fw_target')}: {info['chip']}")
+        if flasher.is_merged_image(data):
+            # Upstream ships one .bin and does not say which kind it is. This
+            # decides it, so the offset does not have to be guessed.
+            lines.append(i18n.t("fw_merged_image"))
         self.fw_info_text = "\n".join(lines)
         self.log(f"firmware: {info['kind']}, {len(data)} bytes")
 
+    def _render_fw_files(self):
+        """Rebuild the multi-image list from `self._fw_files`."""
+        box = self.ids_of("firmware").get("fw_files")
+        if box is None:
+            return
+        box.clear_widgets()
+        for idx, item in enumerate(self._fw_files):
+            row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+            name = Label(text=f"{item['name']} ({len(item['data'])} B)",
+                         size_hint_x=0.5, font_size='12sp',
+                         halign='left', valign='middle',
+                         text_size=(None, None), shorten=True)
+            off = TextInput(text=f"{item['offset']:#x}", size_hint_x=0.25,
+                            font_size='13sp', multiline=False, halign='center')
+
+            # Captured by object, never by index. Removing a row renumbers
+            # everything below it, and a widget from the old layout can still
+            # fire one last text event while the list is being rebuilt - the
+            # stale index then lands outside the list and takes the app down
+            # with an IndexError, which is what "adding a second file crashes"
+            # actually was.
+            def _store(inst, value, _item=item):
+                # Kept as a string until flashing, so a half-typed value does
+                # not have to be a valid number to survive a redraw.
+                _item["offset_text"] = value
+
+            off.bind(text=_store)
+            off.text = f"{item['offset']:#x}"
+            item["offset_text"] = off.text
+            rm = Button(text=i18n.t("fw_remove"), size_hint_x=0.25,
+                        font_size='12sp')
+
+            def _remove(inst, _item=item):
+                if _item in self._fw_files:
+                    self._fw_files.remove(_item)
+                self._render_fw_files()
+
+            rm.bind(on_release=_remove)
+            row.add_widget(name)
+            row.add_widget(off)
+            row.add_widget(rm)
+            box.add_widget(row)
+        self._update_flash_label()
+
+    def _update_flash_label(self):
+        btn = self.ids_of("firmware").get("btn_flash_all")
+        if btn is None:
+            return
+        n = len(self._fw_files)
+        btn.text = (i18n.t("fw_flash_all", n=n) if n > 1
+                    else i18n.t("fw_flash_esp"))
+
+    def fw_guess_offsets(self):
+        """Fill every offset in from its file name."""
+        if not self._fw_files:
+            self.status_text = i18n.t("fw_no_files")
+            return
+        for item in self._fw_files:
+            item["offset"] = flasher.guess_offset(item["name"], item["data"])
+        self._render_fw_files()
+        self.log("fw_offsets: guessed from file names")
+
+    def fw_clear_files(self):
+        """Drop the multi-image list and go back to the single-file path."""
+        self._fw_files = []
+        self._render_fw_files()
+        self.fw_info_text = i18n.t("fw_no_file")
+
+    def _fw_collect(self):
+        """Turn the list into [(offset, data, name)] or raise UserError."""
+        out = []
+        for item in self._fw_files:
+            raw = item.get("offset_text") or f"{item['offset']:#x}"
+            try:
+                value = int(str(raw).strip(), 16)
+            except ValueError:
+                raise UserError(i18n.t("fw_bad_offset",
+                                       name=item["name"], value=raw))
+            out.append((value, item["data"], item["name"]))
+        return out
+
     def fw_flash(self):
-        """Write the image to an ESP32 in download mode."""
+        """Write the image(s) to an ESP32 in download mode."""
+        if self._fw_files:
+            self._fw_flash_multi()
+            return
         if not self._fw_data:
             self.fw_info_text = i18n.t("fw_no_file")
             return
@@ -1199,9 +1526,10 @@ class PicoKeyApp(App):
             return
         device = self._fw_dev
         image = self._fw_data
+        erase_first = self._fw_erase_first()
 
         def work():
-            flasher.flash_esp32(device, image,
+            flasher.flash_esp32(device, image, erase_first=erase_first,
                                 progress=lambda i, n: Clock.schedule_once(
                                     lambda dt: setattr(
                                         self, "status_text",
@@ -1214,6 +1542,55 @@ class PicoKeyApp(App):
             self.log("fw_flash: done")
 
         self._worker(work, on_ok=ok, busy_text=i18n.t("fw_working", n=0))
+
+    def _fw_flash_multi(self):
+        """Write every file in the list at its own offset."""
+        if self._fw_dev is None:
+            self.status_text = i18n.t("fw_no_bootloader")
+            return
+        try:
+            entries = self._fw_collect()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+        device = self._fw_dev
+        erase_first = self._fw_erase_first()
+        if erase_first:
+            self.log("fw_flash: erasing the whole chip first")
+        # Two images at the same address means one silently overwrites the
+        # other, which reads as "it flashed fine but the board is still dead".
+        seen = {}
+        for offset, _, name in entries:
+            if offset in seen:
+                self.log(f"fw_flash: '{seen[offset]}' and '{name}' both at "
+                         f"{offset:#x}")
+            seen[offset] = name
+        self.log("fw_flash: " + ", ".join(f"{n}@{o:#x}" for o, _, n in entries))
+
+        def work():
+            flasher.flash_esp32_multi(
+                device, entries, erase_first=erase_first,
+                progress=lambda i, n, done, blocks: Clock.schedule_once(
+                    lambda dt: setattr(
+                        self, "status_text",
+                        i18n.t("fw_multi_progress", i=i, n=n,
+                               p=int(done * 100 / blocks) if blocks else 0))))
+            return True
+
+        def ok(_):
+            self.busy = False
+            self.status_text = i18n.t("fw_done")
+            self.log("fw_flash: done")
+
+        self._worker(work, on_ok=ok, busy_text=i18n.t("fw_working", n=0))
+
+    def _fw_erase_first(self) -> bool:
+        """Whether the 'erase before writing' toggle is on."""
+        try:
+            btn = self.ids_of("firmware").get("fw_erase_first")
+            return bool(btn is not None and btn.state == "down")
+        except Exception:
+            return False
 
     def fw_erase(self):
         """Erase the whole flash chip.
@@ -1357,13 +1734,21 @@ class PicoKeyApp(App):
             # A plain Button does not wrap: without text_size bound to the
             # width, a long channel label is drawn on one line and overflows
             # the fixed height, overlapping whatever follows.
+            #
+            # The height must follow texture_size, not size. texture_size is
+            # only correct *after* the texture has been rebuilt, which happens
+            # on the next frame - so setting the height inside a size handler
+            # uses the previous, stale value and the widget ends up shorter
+            # than what it draws. That is precisely how the hint text ended up
+            # painted over the channel button above it.
             btn = Button(text=f"{ch.label}\n{ch.detail}",
                          font_name=fonts.FONT_NAME,
                          size_hint_y=None, font_size="13sp",
                          halign="center", valign="center")
-            btn.bind(size=lambda _b, s: (
-                setattr(btn, "text_size", (btn.width - 12, None)),
-                setattr(btn, "height", max(btn.texture_size[1] + dp(16), 70))))
+            btn.bind(width=lambda _b, _w: setattr(
+                btn, "text_size", (btn.width - 12, None)))
+            btn.bind(texture_size=lambda _b, _t: setattr(
+                btn, "height", max(btn.texture_size[1] + dp(16), 70)))
             btn.bind(on_release=lambda _b, c=ch: self.connect(c))
             box.add_widget(btn)
 
@@ -1375,11 +1760,12 @@ class PicoKeyApp(App):
             hint = Label(text=i18n.t("hint_rescue_only"),
                          font_name=fonts.FONT_NAME, font_size="13sp",
                          halign="left", valign="top",
-                         size_hint_y=None,
+                         size_hint_y=None, height=60,
                          color=(1, 0.86, 0.4, 1))
-            hint.bind(size=lambda *_a: (
-                setattr(hint, "text_size", (hint.width - 12, None)),
-                setattr(hint, "height", max(hint.texture_size[1] + dp(10), 60))))
+            hint.bind(width=lambda *_a: setattr(
+                hint, "text_size", (hint.width - 12, None)))
+            hint.bind(texture_size=lambda *_a: setattr(
+                hint, "height", max(hint.texture_size[1] + dp(10), 60)))
             box.add_widget(hint)
 
     def connect(self, channel):
@@ -1409,6 +1795,8 @@ class PicoKeyApp(App):
             self.log(i18n.t("msg_connected_log", label=self.channel.label))
             if result["kind"] == "ctap":
                 self.log("getInfo: " + str(result.get("info")))
+            self._ctap_info = result.get("info") if result["kind"] == "ctap" else None
+            self._uv_refresh_state()
             self.go("device")
 
         self._worker(work, done, i18n.t("connecting"))
@@ -1425,6 +1813,8 @@ class PicoKeyApp(App):
             self.blocked_apdu = False
             self.blocked_ctap = False
             self.channel_hint = ""
+            self._ctap_info = None
+            self.uv_state_text = ""
             return
         self.blocked_apdu = self.kind != "apdu"
         self.blocked_ctap = self.kind != "ctap"
@@ -1759,12 +2149,18 @@ class PicoKeyApp(App):
         lock = ids.chk_lock.state == "down"
         self._ask_secure_confirm(slot, lock)
 
-    def _ask_confirm(self, title, body_text, go_label, on_yes, typed_word=None):
+    def _ask_confirm(self, title, body_text, go_label, on_yes, typed_word=None,
+                     entry=False, entry_hint=""):
         """One dialog for every irreversible action.
 
         `typed_word` (e.g. "CONFIRM") makes the user type it before the action
         runs. Used for eFuse writes; plain erase relies on the button alone,
         which is enough for something that is destructive but recoverable.
+
+        `entry` adds a free-text field whose contents are passed to `on_yes`,
+        for the confirmation that also needs a value (a new minimum PIN
+        length). It is separate from `typed_word` because that one is checked
+        for an exact match and never handed to the caller.
 
         The message label sizes itself to its text. A fixed height clipped long
         strings and made them collide with the buttons below - the same bug
@@ -1780,10 +2176,11 @@ class PicoKeyApp(App):
 
         msg = Label(text=body_text, font_name=fonts.FONT_NAME,
                     font_size="14sp", halign="left", valign="top",
-                    size_hint_y=None)
-        msg.bind(size=lambda *_a: (
-            setattr(msg, "text_size", (msg.width - 12, None)),
-            setattr(msg, "height", max(msg.texture_size[1] + dp(8), 60))))
+                    size_hint_y=None, height=60)
+        msg.bind(width=lambda *_a: setattr(
+            msg, "text_size", (msg.width - 12, None)))
+        msg.bind(texture_size=lambda *_a: setattr(
+            msg, "height", max(msg.texture_size[1] + dp(8), 60)))
         body.add_widget(msg)
 
         typed = None
@@ -1792,6 +2189,13 @@ class PicoKeyApp(App):
                               hint_text=i18n.t("dlg_secure_typed_hint"),
                               size_hint_y=None, height=46, font_size="14sp")
             body.add_widget(typed)
+
+        value_box = None
+        if entry:
+            value_box = TextInput(multiline=False, font_name=fonts.FONT_NAME,
+                                  hint_text=entry_hint, input_filter="int",
+                                  size_hint_y=None, height=46, font_size="14sp")
+            body.add_widget(value_box)
 
         row = BoxLayout(orientation="horizontal", spacing=10,
                         size_hint_y=None, height=52)
@@ -1813,7 +2217,10 @@ class PicoKeyApp(App):
                 typed.hint_text = i18n.t("dlg_secure_typed_bad")
                 return
             popup.dismiss()
-            on_yes()
+            if entry:
+                on_yes((value_box.text or "").strip())
+            else:
+                on_yes()
 
         cancel.bind(on_release=_cancel)
         go.bind(on_release=_go)
@@ -1887,6 +2294,118 @@ class PicoKeyApp(App):
                 self.log("presence confirmed in %.1fs" % elapsed)
 
         self._worker(work, done, i18n.t("msg_testing_presence"))
+
+    def _uv_pin(self) -> str:
+        """The PIN typed into the box, or a UserError naming the problem."""
+        ids = self.ids_of("device")
+        box = ids.get("inp_pin")
+        pin = (box.text if box is not None else "") or ""
+        pin = pin.strip()
+        if not pin:
+            raise UserError(i18n.t("uv_pin_required"))
+        return pin
+
+    def _uv_refresh_state(self):
+        """Re-read getInfo and show the options this feature is about."""
+        info = self._ctap_info or {}
+        summary = ctapcfg.summarise(info) if info else {}
+        if not summary:
+            self.uv_state_text = i18n.t("uv_state_unknown")
+            return
+        lines = []
+        for key, label in (("alwaysUv", "uv_always_uv"),
+                           ("makeCredUvNotRqd", "uv_make_cred"),
+                           ("clientPin", "uv_client_pin")):
+            value = summary.get(key)
+            if value is True:
+                state = i18n.t("uv_on")
+            elif value is False:
+                state = i18n.t("uv_off")
+            else:
+                state = i18n.t("uv_not_reported")
+            lines.append(f"{i18n.t(label)}: {state}")
+        if not ctapcfg.config_supported(info):
+            lines.append(i18n.t("uv_unsupported"))
+        self.uv_state_text = "\n".join(lines)
+
+    def toggle_always_uv(self):
+        """Flip alwaysUv - the switch between "PIN every time" and "press the button"."""
+        if self.kind != "ctap":
+            self.status_text = i18n.t("err_no_ctap")
+            return
+        info = self._ctap_info or {}
+        if not ctapcfg.config_supported(info):
+            self.status_text = i18n.t("uv_unsupported")
+            return
+
+        try:
+            pin = self._uv_pin()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+
+        transport = self.transport
+
+        def work():
+            # The whole handshake happens in the worker: it is several USB
+            # round trips plus a scalar multiplication, none of which belongs
+            # on the UI thread.
+            cfg = ctapcfg.UvConfig(transport)
+            cfg.obtain_token(pin)
+            cfg.toggle_always_uv()
+            return True
+
+        def ok(_):
+            self.busy = False
+            self.status_text = i18n.t("uv_toggled")
+            self.log("alwaysUv: toggled")
+            self._ctap_info = None
+            self._uv_refresh_state()
+
+        self._worker(work, ok, i18n.t("uv_working"))
+
+    def ask_set_min_pin(self):
+        """Confirm before raising the minimum PIN length - it cannot be undone."""
+        if self.kind != "ctap":
+            self.status_text = i18n.t("err_no_ctap")
+            return
+        try:
+            pin = self._uv_pin()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+
+        def on_yes(value):
+            try:
+                length = int(str(value).strip())
+            except (TypeError, ValueError):
+                self.status_text = i18n.t("uv_bad_length")
+                return
+            self._set_min_pin(pin, length)
+
+        self._ask_confirm(i18n.t("uv_set_min_title"),
+                          i18n.t("uv_set_min_body"),
+                          i18n.t("uv_set_min_go"),
+                          on_yes, typed_word="CONFIRM",
+                          entry=True, entry_hint=i18n.t("uv_set_min_hint"))
+
+    def _set_min_pin(self, pin: str, length: int):
+        transport = self.transport
+
+        def work():
+            cfg = ctapcfg.UvConfig(transport)
+            cfg.obtain_token(pin)
+            cfg.set_min_pin_length(length)
+            return True
+
+        def ok(_):
+            self.busy = False
+            self.status_text = i18n.t("uv_min_set") % length
+            self.log(f"minPINLength: {length}")
+            self._ctap_info = None
+            self._uv_refresh_state()
+
+        self._worker(work, ok, i18n.t("uv_working"))
 
     def reboot(self, bootsel: bool):
         def work():
