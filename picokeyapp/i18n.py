@@ -436,13 +436,85 @@ STRINGS.update({
     "fw_unknown": {"zh": "无法识别的格式", "en": "unrecognised format"},
     "fw_family_rp2040": {"zh": "RP2040", "en": "RP2040"},
     "fw_family_rp2350": {"zh": "RP2350", "en": "RP2350"},
+    "sec_uv": {"zh": "用户验证策略（FIDO HID）", "en": "User verification policy (FIDO HID)"},
+    "uv_explain": {
+        "zh": "alwaysUv 开启时，每次注册都要做用户验证，平台会用 PIN 来满足它——于是物理按键永远不参与。"
+              "关掉它之后，makeCredUvNotRqd 才可能为 true，非驻留凭证可以只凭按键创建。"
+              "需要设备的 PIN，并且只在 FIDO HID 通道可用。",
+        "en": "With alwaysUv on, every registration needs user verification and the platform satisfies that with the PIN, so the physical button is never consulted. "
+              "Turning it off is what lets makeCredUvNotRqd become true, after which a non-discoverable credential can be created on a button press alone. "
+              "Needs the device PIN, and only works on the FIDO HID channel.",
+    },
+    "uv_state_unknown": {"zh": "尚未读取", "en": "not read yet"},
+    "uv_always_uv": {"zh": "alwaysUv", "en": "alwaysUv"},
+    "uv_make_cred": {"zh": "makeCredUvNotRqd", "en": "makeCredUvNotRqd"},
+    "uv_client_pin": {"zh": "clientPin", "en": "clientPin"},
+    "uv_on": {"zh": "开启", "en": "on"},
+    "uv_off": {"zh": "关闭", "en": "off"},
+    "uv_not_reported": {"zh": "未上报", "en": "not reported"},
+    "uv_unsupported": {
+        "zh": "此固件没有上报 authnrCfg，可能不支持 authenticatorConfig。",
+        "en": "This firmware does not report authnrCfg, so authenticatorConfig may be unsupported.",
+    },
+    "uv_pin": {"zh": "PIN", "en": "PIN"},
+    "uv_pin_hint": {"zh": "设备的 FIDO2 PIN", "en": "the device's FIDO2 PIN"},
+    "uv_pin_required": {"zh": "请先填写设备的 PIN。", "en": "Enter the device PIN first."},
+    "btn_toggle_always_uv": {"zh": "切换 alwaysUv（需要 PIN）", "en": "Toggle alwaysUv (needs the PIN)"},
+    "btn_set_min_pin": {"zh": "设置最小 PIN 长度（不可逆）", "en": "Set the minimum PIN length (cannot be undone)"},
+    "uv_working": {"zh": "正在与设备协商…", "en": "Negotiating with the device…"},
+    "uv_toggled": {"zh": "alwaysUv 已切换。再点一次可切回。", "en": "alwaysUv toggled. Tap again to switch back."},
+    "uv_set_min_title": {"zh": "设置最小 PIN 长度", "en": "Set the minimum PIN length"},
+    "uv_set_min_body": {
+        "zh": "最小 PIN 长度只能增大，不能减小。想改回去只能重置整个认证器，那会删掉全部凭证。",
+        "en": "The minimum PIN length can only ever increase. Lowering it again requires a full authenticator reset, which deletes every credential.",
+    },
+    "uv_set_min_go": {"zh": "设置", "en": "Set"},
+    "uv_set_min_hint": {"zh": "新的最小长度（4–63）", "en": "new minimum length (4-63)"},
+    "uv_bad_length": {"zh": "请填一个 4 到 63 之间的数字。", "en": "Enter a number between 4 and 63."},
+    "uv_min_set": {"zh": "最小 PIN 长度已设为 %d。", "en": "Minimum PIN length set to %d."},
     "fw_flash_esp": {"zh": "刷入 ESP32（会覆盖现有固件）", "en": "Flash ESP32 (overwrites current firmware)"},
     "fw_save_uf2": {"zh": "交给文件管理器保存（RP2040/RP2350）", "en": "Save via file manager (RP2040/RP2350)"},
+    "fw_add_file": {"zh": "再添加一个文件（多文件刷写）", "en": "Add another file (multi-image flashing)"},
+    "fw_clear_files": {"zh": "清空列表", "en": "Clear list"},
+    "fw_guess_layout": {"zh": "按文件名自动填偏移", "en": "Fill offsets from file names"},
+    "fw_flash_all": {"zh": "刷入全部 {n} 个文件", "en": "Flash all {n} files"},
+    "fw_offset": {"zh": "偏移", "en": "Offset"},
+    "fw_remove": {"zh": "移除", "en": "Remove"},
+    "fw_multi_hint": {
+        "zh": "ESP32-S3 需要三个文件写在不同位置：bootloader → 0x0、分区表 → 0x8000、固件 → 0x10000。"
+             "只刷固件到 0x0 会让板子把固件当 bootloader 加载，起不来、灯也不亮（灯由固件驱动）。",
+        "en": "An ESP32-S3 needs three images at different offsets: bootloader at 0x0, partition table at 0x8000, firmware at 0x10000. "
+             "Writing only the firmware at 0x0 makes the chip load it as a bootloader, so nothing runs and the LED stays dark (firmware drives the LED).",
+    },
+    "fw_multi_progress": {
+        "zh": "正在写第 {i}/{n} 个文件：{p}%",
+        "en": "Writing file {i}/{n}: {p}%",
+    },
+    "fw_no_files": {"zh": "列表是空的", "en": "The list is empty"},
+    "fw_bad_offset": {
+        "zh": "「{name}」的偏移「{value}」不是有效的十六进制数。",
+        "en": "Offset '{value}' for '{name}' is not a valid hex number.",
+    },
+    "fw_duplicate_offset": {
+        "zh": "有两个文件都写在 {offset:#x}，后者会覆盖前者。确认这是你要的吗？",
+        "en": "Two files both target {offset:#x}; the later one overwrites the earlier. Is that intended?",
+    },
     "fw_scan_bootloader": {"zh": "扫描处于下载模式的设备", "en": "Scan for a device in download mode"},
     # 分区标题（三个小节，替代原来散落的说明文字）
     "fw_sec_device": {"zh": "1. 选择板子", "en": "1. Pick the board"},
     "fw_sec_image": {"zh": "2. 选择固件", "en": "2. Pick the firmware"},
     "fw_sec_write": {"zh": "3. 写入", "en": "3. Write"},
+    "fw_merged_image": {
+        "zh": "识别为整片镜像（内含 bootloader，偏移 0x10000 处有应用程序头），应写到 0x0，不需要另外两个文件",
+        "en": "Whole-flash image (contains a bootloader; an app header sits at 0x10000) - write it to 0x0, no other files needed",
+    },
+    "fw_erase_first": {"zh": "写入前先整片擦除", "en": "Erase whole flash before writing"},
+    "fw_erase_first_hint": {
+        "zh": "勾选后，刷写会先擦除整片 flash 再写入。固件起不来时只重刷是不够的——让它起不来的那份配置还留在 flash 里，刷完还是老样子。先擦才能真正清干净。擦除会清掉所有密钥。",
+        "en": "When this is on, flashing erases the whole chip first. Re-flashing alone is not enough when the firmware will not start: whatever stopped it booting is still in flash, so it comes back in the same state. Erasing wipes every credential too.",
+    },
+    "log_file_at": {"zh": "日志同时写入文件：", "en": "Log is also written to:"},
+    "fw_sec_multi": {"zh": "2b. 多个文件与偏移（ESP32）", "en": "2b. Several files and offsets (ESP32)"},
     # 不再在 UI 里讲具体手势：不同板子进下载模式的方式不同，说死会误导。
     # 只提示"让板子进入刷机模式"，具体做法看板子自己的说明。
     "fw_enter_mode_hint": {

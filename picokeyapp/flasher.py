@@ -540,8 +540,14 @@ def erase_esp32(device, region: tuple = None) -> None:
             pass
 
 
-def flash_esp32(device, image: bytes, progress=None):
-    """Open the CDC data interface of an ESP32 in download mode and flash it."""
+def flash_esp32(device, image: bytes, progress=None, erase_first=False):
+    """Open the CDC data interface of an ESP32 in download mode and flash it.
+
+    `erase_first` wipes the whole chip before writing. It has to happen on the
+    same connection as the write: erasing through a second connection leaves the
+    ROM free to answer late, and the erase reply is then read as the first
+    flash command's - the "got op 0D, wanted D0" failure.
+    """
     intfs = device.interfaces_of_class(USB_CLASS_CDC_DATA)
     if not intfs:
         raise FirmwareError(t("fw_no_cdc", default="no serial interface found"))
@@ -551,7 +557,88 @@ def flash_esp32(device, image: bytes, progress=None):
         if not loader.sync():
             raise FirmwareError(t("fw_esp_nosync",
                                   default="bootloader did not answer - is the board in download mode?"))
+        if erase_first:
+            loader.erase_flash()
         loader.flash(image, progress=progress)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+APP_OFFSET = 0x10000
+ESP_MAGIC = 0xE9
+
+
+def is_merged_image(data: bytes) -> bool:
+    """True when this is a whole-flash image, not just the application.
+
+    Upstream ships a single .bin for the ESP32. There is no filename to tell
+    whether it is the app alone (which belongs at 0x10000) or everything merged
+    into one (which belongs at 0x0) - and writing either to the wrong address
+    produces a board that flashes "successfully" and then never starts.
+
+    The merged form is unambiguous though: esptool's merge_bin pads the gap up
+    to the app partition with 0xFF, so a real application image header sits at
+    0x10000 inside the file. An app-only image is not that long, and its own
+    header is at 0x0.
+    """
+    if not data or len(data) <= APP_OFFSET:
+        return False
+    return data[APP_OFFSET] == ESP_MAGIC
+
+
+def guess_offset(name: str, data: bytes = None) -> int:
+    """Pick a plausible flash offset from a firmware file name.
+
+    An ESP32-S3 boots from three separate images, and getting the offsets wrong
+    is the single most common reason a freshly flashed board stays dark: the app
+    image written at 0x0 is loaded as if it were a bootloader, so nothing ever
+    runs and - because the LED is driven by firmware - no LED ever lights up
+    either. Guessing here means the common case needs no typing at all.
+    """
+    # A whole-flash image wins over the file name: it goes at 0x0 whatever it
+    # is called, and the name frequently says nothing useful anyway.
+    if data and is_merged_image(data):
+        return 0x0
+    low = (name or "").lower()
+    if "bootloader" in low:
+        return 0x0
+    if "partition" in low:
+        return 0x8000
+    if low.endswith(".uf2"):
+        return 0x0            # UF2 is self-describing; offset is not used
+    return 0x10000            # the application image
+
+
+def flash_esp32_multi(device, entries, progress=None, erase_first=False):
+    """Write several images at their own offsets, over one connection.
+
+    `entries` is a list of (offset, image, name). Opening the interface once
+    matters: re-syncing between files gives the ROM a chance to answer late and
+    leaves the previous command's reply to be read as the next one's - the
+    "got op 0D, wanted D0" failure.
+
+    `progress` is called with (file_index, file_count, blocks_done, blocks_total).
+    """
+    intfs = device.interfaces_of_class(USB_CLASS_CDC_DATA)
+    if not intfs:
+        raise FirmwareError(t("fw_no_cdc", default="no serial interface found"))
+    conn = usbhost.Connection(device, intfs[0], force=True)
+    try:
+        loader = EspLoader(conn)
+        if not loader.sync():
+            raise FirmwareError(t("fw_esp_nosync",
+                                  default="bootloader did not answer - is the board in download mode?"))
+        if erase_first:
+            loader.erase_flash()
+        total = len(entries)
+        for idx, (offset, image, name) in enumerate(entries, start=1):
+            def _sub(done, blocks, _i=idx, _n=name):
+                if progress:
+                    progress(_i, total, done, blocks)
+            loader.flash(image, offset=offset, progress=_sub)
     finally:
         try:
             conn.close()
