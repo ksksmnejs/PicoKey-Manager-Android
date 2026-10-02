@@ -1,0 +1,886 @@
+name: Build Android APK (UV config branch)
+
+# The UV branch build. Same shape as build-apk.yml on purpose: whatever is
+# fixed there can be copied across, and the two differ only in the branch they
+# watch, the changelog they read and the name they publish under.
+#
+# It builds on every commit to uv-config that touches code or the changelog.
+# The workflow file itself is not in the path filter: editing CI does not
+# change the APK, and including it would fire a build every time.
+#
+# The version comes from CHANGELOG.uv.md, NOT CHANGELOG.md. Sharing one file
+# would have the two branches overwrite each other's version every time either
+# of them built.
+on:
+  push:
+    branches: [uv-config]
+    paths:
+      - 'main.py'
+      - 'picokeyapp/**'
+      - 'buildozer.spec'
+      - 'CHANGELOG.uv.md'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. v0.1.0. Leave empty to use v + the resolved version'
+        required: false
+        default: ''
+      publish:
+        description: 'Publish the APK to Releases'
+        type: boolean
+        default: true
+      draft:
+        description: 'Create the release as a draft (review before publishing)'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        type: boolean
+        default: false
+      bump:
+        description: 'How to set the version in buildozer.spec'
+        type: choice
+        default: 'auto'
+        options:
+          - auto    # take the newest version from CHANGELOG.uv.md (recommended)
+          - patch   # 0.2.0 -> 0.2.1
+          - minor   # 0.2.0 -> 0.3.0
+          - major   # 0.2.0 -> 1.0.0
+          - none    # leave buildozer.spec alone
+      overwrite:
+        # On by default: the version only moves when CHANGELOG.md gains a new
+        # section, so rebuilding without editing it resolves to a tag that is
+        # already published - and refusing to clobber then fails every single
+        # run. Untick this only when you want a rebuild to stop rather than
+        # replace the APK that is already out there.
+        description: 'Replace an existing release with this tag instead of failing (untick to protect a published version)'
+        type: boolean
+        default: true
+
+# One build at a time, and a new one cancels whatever is still running.
+#
+# Without this, every extra tap of "Run workflow" queues another 15-40 minute
+# job behind the current one - the queue fills up, each run burns Actions
+# minutes producing an APK nobody will use, and the build that finally finishes
+# is not necessarily the one with the latest code. Cancelling the in-progress
+# run means pressing Run twice is safe: the second press replaces the first.
+concurrency:
+  group: build-apk-uv
+  # Deliberately NOT "build-apk". The main workflow uses that fixed group with
+  # cancel-in-progress, so sharing it would let a push here cancel a main-branch
+  # build that is already running - and vice versa. The two must not contend.
+  cancel-in-progress: true
+
+# Needed so GITHUB_TOKEN may create a release and upload assets. Without this
+# the release step fails with "Resource not accessible by integration".
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # ubuntu-22.04 entered deprecation on 2026-09-17: jobs on that label wait
+    # in the queue much longer at peak hours (documented by GitHub as queue
+    # delays, not failures). ubuntu-24.04 is the recommended replacement.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    # You have triggered this workflow many times; older runs can sit in the
+    # queue in front of the new one and make it look "stuck". This keeps only
+    # the newest run per branch and cancels whatever is still queued/running.
+    concurrency:
+      group: build-apk-uv-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip python3-pip python3-setuptools \
+            autoconf automake libtool pkg-config zlib1g-dev \
+            libncurses-dev libssl-dev libffi-dev cmake libltdl-dev
+
+      # p4a's bootstrap ships Gradle 8.14.3, which requires JDK 17. The
+      # runner's default javac is 11, which buildozer would pick up and then
+      # fail on during the Gradle stage.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Pin the debug signing key.
+      #
+      # A fresh runner creates a brand-new debug keystore every build, so the
+      # APK is signed differently each time and Android refuses to update:
+      # "App not installed as package appears to be invalid" / signature
+      # mismatch, forcing an uninstall first - which wipes app data.
+      #
+      # Android's Gradle plugin signs debug builds with ~/.android/debug.keystore
+      # (alias androiddebugkey, password android) and auto-creates it when
+      # missing, so dropping a fixed one there is all it takes.
+      #
+      # A repository secret wins when set, so anyone who would rather not keep a
+      # key in git can store the same file base64-encoded as
+      # ANDROID_KEYSTORE_BASE64 and the committed copy is simply ignored.
+      - name: Install signing key
+        id: key
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -eu
+          mkdir -p "$HOME/.android"
+          KS="$HOME/.android/debug.keystore"
+
+          if [ -n "${KS_B64:-}" ]; then
+            printf '%s' "$KS_B64" | base64 -d > "$KS"
+            echo "::notice::using the keystore from ANDROID_KEYSTORE_BASE64"
+            echo "source=secret" >> "$GITHUB_OUTPUT"
+          elif [ -f tools/debug.keystore.b64 ]; then
+            base64 -d tools/debug.keystore.b64 > "$KS"
+            echo "::notice::using the keystore committed in tools/debug.keystore.b64"
+            echo "source=committed" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::no signing key available"
+            exit 1
+          fi
+
+          # Fail loudly here rather than shipping an APK that cannot be updated.
+          if ! keytool -list -keystore "$KS" \
+               -storepass android -alias androiddebugkey >/dev/null 2>&1; then
+            echo "::error::debug.keystore is unusable - wrong password or alias"
+            exit 1
+          fi
+
+          # Normalise the container format to JKS.
+          #
+          # keytool has defaulted to PKCS12 since JDK 9, but the Gradle plugin
+          # reads the debug keystore as JKS: when it cannot load the file it
+          # silently deletes it and generates a fresh one, so every build comes
+          # out with a different signature and phones report "signature
+          # conflict" - which is exactly what was happening. The conversion is
+          # a container change only, so the certificate and its fingerprint
+          # are untouched: anyone who already installed a build made with this
+          # key can still update in place.
+          KSTYPE=$(keytool -list -keystore "$KS" -storepass android 2>/dev/null \
+                   | grep -i 'keystore type' | sed 's/.*: *//' | tr -d '\r')
+          echo "keystore container format: ${KSTYPE:-unknown}"
+          if [ "${KSTYPE:-}" != "JKS" ]; then
+            echo "::notice::converting ${KSTYPE:-unknown} -> JKS (same key, same fingerprint)"
+            keytool -importkeystore \
+              -srckeystore "$KS" -srcstoretype "${KSTYPE:-PKCS12}" \
+              -srcstorepass android -srckeypass android -srcalias androiddebugkey \
+              -destkeystore "$KS.jks" -deststoretype JKS \
+              -deststorepass android -destkeypass android -destalias androiddebugkey \
+              >/dev/null 2>&1 || {
+                echo "::error::could not convert the keystore to JKS"
+                exit 1
+              }
+            mv -f "$KS.jks" "$KS"
+          fi
+
+          echo "Signing key in use:"
+          keytool -list -v -keystore "$KS" -storepass android 2>/dev/null \
+            | grep -E 'Alias name|SHA1' | head -2
+
+      - name: Confirm toolchain
+        run: |
+          java -version
+          javac -version
+          echo "JAVA_HOME=$JAVA_HOME"
+
+      # Show exactly how the repo was uploaded, then locate buildozer.spec
+      # wherever it ended up (root, or inside a wrapper folder).
+      - name: Locate project directory
+        id: locate
+        run: |
+          echo "=== repo root ==="
+          ls -la
+          SPEC=$(find . -name buildozer.spec -not -path "./.git/*" | head -n 1)
+          if [ -z "$SPEC" ]; then
+            echo "::error::buildozer.spec not found anywhere in the repo"
+            find . -not -path "./.git/*" | head -n 60
+            exit 1
+          fi
+          DIR=$(dirname "$SPEC")
+          echo "project dir = $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          ls -la "$DIR"
+
+      # Resolve the version BEFORE buildozer runs, so the APK itself carries
+      # the new number (buildozer bakes `version` into the APK metadata).
+      #
+      # With bump=auto the single source of truth is CHANGELOG.md: add a
+      # "## [v0.3.0]" section there and this step writes 0.3.0 into
+      # buildozer.spec. That removes the "edit version in two places" trap
+      # where the CHANGELOG said one thing and the spec another.
+      - name: Resolve version
+        id: resolve
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          python3 - <<'PYEOF'
+          import os, re
+
+          BUMP = os.environ.get('BUMP', 'auto')
+          SPEC = 'buildozer.spec'
+
+          def vt(s):
+              return tuple(int(x) for x in re.findall(r'\d+', s)[:3] or [0])
+
+          def newest_in_changelog(path):
+              # Highest version among the headings, so an out-of-order or
+              # backfilled entry cannot pick the wrong one. Code fences are
+              # stripped first - the format example at the top of the file
+              # contains "## [v0.3.0]" and is not a real entry.
+              try:
+                  text = open(path, encoding='utf-8').read()
+              except FileNotFoundError:
+                  print("::warning::%s not found" % path)
+                  return None
+              text = re.sub(r'```.*?```', '', text, flags=re.S)
+              found = [m.group(1) for m in re.finditer(r'^##\s+\[?v?([\d.]+)', text, re.M)]
+              if not found:
+                  return None
+              return max(found, key=vt)
+
+          spec = open(SPEC, encoding='utf-8').read()
+          cur_m = re.search(r'^version\s*=\s*(\S+)', spec, re.M)
+          cur = cur_m.group(1) if cur_m else '0.1.0'
+          print("buildozer.spec currently says: %s" % cur)
+
+          new = None
+          if BUMP == 'none':
+              new = cur
+          elif BUMP in ('patch', 'minor', 'major'):
+              a, b, c = (list(vt(cur)) + [0, 0, 0])[:3]
+              if BUMP == 'patch':
+                  new = "%d.%d.%d" % (a, b, c + 1)
+              elif BUMP == 'minor':
+                  new = "%d.%d.0" % (a, b + 1)
+              else:
+                  new = "%d.0.0" % (a + 1)
+          else:
+              cl = newest_in_changelog('CHANGELOG.uv.md')
+              if cl is None:
+                  print("::warning::no version heading found in CHANGELOG.uv.md; keeping %s" % cur)
+                  new = cur
+              elif vt(cl) <= vt(cur) and BUMP == 'auto' and cl != cur:
+                  print("::warning::CHANGELOG.uv.md newest is %s, not newer than spec %s" % (cl, cur))
+                  new = cur
+              else:
+                  new = cl
+
+          print("resolved version: %s (bump=%s)" % (new, BUMP))
+
+          if new != cur:
+              if cur_m:
+                  spec = spec[:cur_m.start()] + 'version = ' + new + spec[cur_m.end():]
+              else:
+                  spec = spec.replace('[app]', '[app]\nversion = ' + new, 1)
+              open(SPEC, 'w', encoding='utf-8').write(spec)
+              print("::notice::buildozer.spec version bumped %s -> %s" % (cur, new))
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+                  fh.write("changed=true\n")
+          else:
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+                  fh.write("changed=false\n")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write("version=%s\n" % new)
+              fh.write("previous=%s\n" % cur)
+          PYEOF
+          echo "=== buildozer.spec now says ==="
+          grep -n '^version' buildozer.spec
+
+      - name: Cache buildozer downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+          key: buildozer-${{ runner.os }}-v2
+
+      - name: Install buildozer / Cython
+        run: |
+          python3 -m pip install --user --upgrade pip
+          # Cython 0.29.37 is the only choice that satisfies BOTH constraints:
+          #   buildozer 1.6.0 metadata: cython<3.0
+          #   p4a kivy recipe:          cython>=0.29.1,<=3.0.12
+          # Pinning Cython==3.0.12 (as an earlier revision did) violates
+          # buildozer's cython<3.0, and pip silently fell back to buildozer
+          # 1.5.0 - which is why the old log showed "1.5.0" instead of 1.6.0.
+          python3 -m pip install --user "Cython==0.29.37" "buildozer==1.6.0"
+          buildozer --version
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      # Diagnostic only. IMPORTANT: never create ~/.buildozer/android/platform/
+      # android-sdk (or anything inside it) here - buildozer decides whether to
+      # download the SDK by checking if that directory exists, so pre-creating
+      # it makes buildozer skip the download and then die with
+      # "sdkmanager path does not exist, sdkmanager is not installed".
+      - name: Report SDK state before build
+        run: |
+          P="$HOME/.buildozer/android/platform"
+          echo "=== $P ==="
+          ls -la "$P" 2>/dev/null || echo "(no platform dir yet - SDK will be downloaded)"
+          echo "=== sdkmanager ==="
+          ls -la "$P/android-sdk/tools/bin/" 2>/dev/null || echo "(sdkmanager not installed yet)"
+
+      # Everything between "Install signing key" and the build downloads and
+      # unpacks the Android SDK, and nothing guarantees ~/.android survives that
+      # untouched. Re-assert the key immediately before Gradle runs and print
+      # what is actually on disk at that moment, so "Gradle generated its own
+      # key" can never again be a guess: either the fingerprint below matches
+      # the APK afterwards, or the file was replaced between here and there.
+      - name: Re-assert signing key before build
+        run: |
+          set -eu
+          KS="$HOME/.android/debug.keystore"
+          if [ ! -f "$KS" ]; then
+            echo "::error::debug.keystore disappeared after the SDK setup"
+            exit 1
+          fi
+          echo "keystore at build time: $KS"
+          keytool -list -v -keystore "$KS" -storepass android 2>/dev/null \
+            | grep -E 'Keystore type|Alias name|SHA1:' || true
+
+      # Informational only: the APK does not depend on this passing.
+      - name: Sanity check (protocol self-test, no hardware needed)
+        continue-on-error: true
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          python3 -m picokeyapp.selftest || echo "self-test could not run (non-fatal)"
+
+      # `yes |` is a catch-all for any leftover interactive prompt in the
+      # toolchain (sdkmanager license, etc). buildozer.spec already sets
+      # android.accept_sdk_license = True, which handles the pexpect path;
+      # this covers the rest. The pipeline's exit code is buildozer's.
+      - name: Build debug APK
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          yes | buildozer -v android debug
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          echo "=== buildozer logs ==="
+          find .buildozer "$HOME/.buildozer" -name "*.log" 2>/dev/null | head -20
+          for f in $(find .buildozer -name "*.log" 2>/dev/null | tail -3); do
+            echo "===== $f ====="; tail -n 150 "$f"
+          done
+          echo "=== SDK tree ==="
+          ls -la "$HOME/.buildozer/android/platform/" 2>/dev/null
+          ls -la "$HOME/.buildozer/android/platform/android-sdk/" 2>/dev/null
+          ls -la "$HOME/.buildozer/android/platform/android-sdk/tools/bin/" 2>/dev/null
+
+      # Renamed to a self-describing filename: the raw buildozer output is
+      # something like picokeymanager-0.1.0-arm64_v8a-debug.apk, which says
+      # nothing about what it is once it sits in a release asset list.
+      - name: Prepare release assets
+        id: assets
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          VER=$(python3 -c "
+          import configparser
+          c = configparser.ConfigParser()
+          c.read('buildozer.spec')
+          print(c['app']['version'].strip())
+          " 2>/dev/null || echo "0.1.0")
+          if [ -z "$VER" ]; then VER="0.1.0"; fi
+          TAG="${INPUT_TAG:-v$VER}"
+          case "$TAG" in v*) ;; *) TAG="v$TAG";; esac
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          rm -rf release && mkdir -p release
+          found=0
+          for f in bin/*.apk; do
+            [ -e "$f" ] || continue
+            cp "$f" "release/picokey-manager-uv-${TAG}-arm64-debug.apk"
+            found=$((found+1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no APK produced in bin/"
+            ls -la bin/ || true
+            exit 1
+          fi
+
+          # Only the APK goes into the release. The web flasher is deployed to
+          # GitHub Pages by static.yml instead - carrying it here as well just
+          # gave people two copies that drift apart, and downloading an HTML
+          # file over file:// is one of the ways people end up with a page
+          # where WebUSB silently does nothing.
+          ls -la release/
+
+      # Placing a keystore at ~/.android/debug.keystore only helps if the build
+      # actually signs with it. This step reads the certificate back out of the
+      # finished APK and compares it with the key we installed, so a build that
+      # silently used a freshly generated key is reported here instead of
+      # turning into "signature conflict" on somebody's phone.
+      - name: Verify APK signature
+        id: verify
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          set +e
+          APK=$(ls release/*.apk 2>/dev/null | head -1)
+          KS="$HOME/.android/debug.keystore"
+
+          if [ -z "$APK" ]; then
+            echo "::error::no APK found in release/ - nothing to verify"
+            exit 1
+          fi
+
+          norm() { tr -d ' :' | tr 'A-F' 'a-f'; }
+
+          # --- what we expect -------------------------------------------------
+          # The fingerprint of tools/debug.keystore.b64. Hardcoding it means the
+          # check still has something to compare against even if the keystore
+          # file itself cannot be read back at this point in the job.
+          COMMITTED_SHA1="5df3ab436ce806d594da56ae4f0310361116d09b"
+
+          EXPECTED=""
+          if [ -f "$KS" ]; then
+            EXPECTED=$(keytool -list -v -keystore "$KS" -storepass android \
+                       2>/dev/null | grep -i 'SHA1:' | head -1 \
+                       | sed 's/.*SHA1: *//' | norm)
+          fi
+          if [ -z "$EXPECTED" ] && [ "${{ steps.key.outputs.source }}" = "committed" ]; then
+            EXPECTED="$COMMITTED_SHA1"
+          fi
+
+          # --- what the APK actually carries -----------------------------------
+          # Several independent readers, tried in order. The previous version
+          # only knew one apksigner path and one unzip glob, and printed a bare
+          # "could not read" that gave no hint which of them had failed - which
+          # is exactly the warning that looks like a signing failure but is not.
+          ACTUAL=""
+          HOW=""
+
+          # 1) apksigner: understands v1/v2/v3, so it works even when the APK
+          #    carries no META-INF certificate at all.
+          for root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" /usr/lib/android-sdk; do
+            [ -n "$root" ] || continue
+            AS=$(ls "$root"/build-tools/*/apksigner 2>/dev/null | head -1)
+            if [ -n "$AS" ] && [ -x "$AS" ]; then
+              # apksigner prints "SHA-1 digest", keytool prints "SHA1:" - the
+              # pattern must accept both. The old one only accepted the
+              # latter, so a perfectly good apksigner run still yielded
+              # nothing and the check fell through to "could not read".
+              out=$("$AS" verify --print-certs "$APK" 2>&1)
+              got=$(printf '%s' "$out" | grep -iE 'SHA-?1' | head -1 \
+                    | sed -E 's/.*SHA-?1[^:]*: *//I' | norm)
+              if [ -n "$got" ]; then ACTUAL="$got"; HOW="apksigner ($AS)"; break; fi
+              echo "apksigner produced no fingerprint; output was:"
+              printf '%s\n' "$out" | head -20
+            fi
+          done
+          [ -z "$ACTUAL" ] && command -v apksigner >/dev/null 2>&1 && {
+            got=$(apksigner verify --print-certs "$APK" 2>/dev/null \
+                  | grep -iE 'SHA-?1' | head -1 \
+                  | sed -E 's/.*SHA-?1[^:]*: *//I' | norm)
+            [ -n "$got" ] && { ACTUAL="$got"; HOW="apksigner (PATH)"; }
+          }
+
+          # 2) keytool can read a signed jar/apk directly.
+          if [ -z "$ACTUAL" ]; then
+            got=$(keytool -printcert -jarfile "$APK" 2>/dev/null \
+                  | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+            [ -n "$got" ] && { ACTUAL="$got"; HOW="keytool -printcert -jarfile"; }
+          fi
+
+          # 3) Last resort: pull the v1 certificate out of the zip ourselves.
+          #    python3 is guaranteed to be here (buildozer just ran on it), and
+          #    this works even without unzip or the Android SDK on PATH.
+          if [ -z "$ACTUAL" ]; then
+            CERT=$(python3 -c '
+          import sys, zipfile, os, tempfile
+          try:
+              z = zipfile.ZipFile(sys.argv[1])
+          except Exception as exc:
+              sys.stderr.write("zipfile failed: %s\n" % exc)
+              sys.exit(0)
+          names = [n for n in z.namelist()
+                   if n.upper().startswith("META-INF/")
+                   and n.upper().endswith((".RSA", ".DSA", ".EC"))]
+          sys.stderr.write("META-INF certs: %s\n" % (names or "none"))
+          if not names:
+              sys.exit(0)
+          fd, path = tempfile.mkstemp(suffix=".der")
+          os.close(fd)
+          with open(path, "wb") as fh:
+              fh.write(z.read(names[0]))
+          print(path)
+          ' "$APK")
+            if [ -n "$CERT" ] && [ -f "$CERT" ]; then
+              got=$(keytool -printcert -file "$CERT" 2>/dev/null \
+                    | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+              [ -n "$got" ] && { ACTUAL="$got"; HOW="python3 + keytool (v1 cert)"; }
+              rm -f "$CERT"
+            fi
+          fi
+
+          echo "APK         : $APK"
+          echo "key source  : ${{ steps.key.outputs.source }}"
+          echo "key   SHA1  : ${EXPECTED:-<not available>}"
+          echo "apk   SHA1  : ${ACTUAL:-<could not read>}"
+          echo "read via    : ${HOW:-<no tool succeeded>}"
+
+          if [ -z "$ACTUAL" ]; then
+            echo "::warning::could not read the signing certificate from the APK."
+            echo "::warning::This is a limitation of the checker, not proof that"
+            echo "::warning::signing is wrong - but it does mean this build was"
+            echo "::warning::NOT confirmed as updatable in place."
+            echo "mismatch=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::notice::The APK left Gradle with a different signature than the"
+            echo "::notice::pinned key - Gradle most likely generated one of its own."
+            echo "::notice::This is corrected below by re-signing, so it is not a"
+            echo "::notice::failed build; it does mean the pinned keystore is not"
+            echo "::notice::reaching Gradle, which is worth fixing separately."
+            echo "::notice::Expected $EXPECTED, got $ACTUAL."
+            echo "mismatch=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$EXPECTED" ]; then
+            echo "signature matches the debug key - updates will install in place"
+            echo "over any build made since the key was introduced."
+            echo "mismatch=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "mismatch=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "expected=${EXPECTED:-}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      # Belt and braces.
+      #
+      # Even with a JKS keystore in place, Gradle is free to sign with a key of
+      # its own choosing, and the only thing that actually matters to a phone
+      # is what is inside the finished APK. So when the check above finds a
+      # foreign signature, sign the APK again with the pinned key instead of
+      # shipping something that will not update.
+      #
+      # zipalign first: apksigner requires an aligned archive, and a mismatch
+      # in either order produces an APK that installs but misbehaves.
+      - name: Re-sign APK with the pinned key
+        if: steps.verify.outputs.mismatch == 'true'
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          set -eu
+          APK="${{ steps.verify.outputs.apk }}"
+          KS="$HOME/.android/debug.keystore"
+
+          if [ ! -f "$KS" ]; then
+            echo "::error::cannot re-sign: $KS is missing"
+            exit 1
+          fi
+
+          # Every lookup below is allowed to fail: under `set -e` a bare
+          # `cmd` (or `a && b`) that returns non-zero aborts the whole step,
+          # so a missing SDK directory would kill the build before it ever
+          # reached the real error message.
+          AS=""
+          for root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" \
+                      "$HOME/.buildozer/android/platform/android-sdk" \
+                      /usr/lib/android-sdk; do
+            [ -n "$root" ] || continue
+            cand=$(ls "$root"/build-tools/*/apksigner 2>/dev/null | head -1 || true)
+            if [ -n "$cand" ] && [ -x "$cand" ]; then AS="$cand"; break; fi
+          done
+          if [ -z "$AS" ] && command -v apksigner >/dev/null 2>&1; then
+            AS="apksigner"
+          fi
+
+          if [ -z "$AS" ]; then
+            echo "::error::cannot re-sign: apksigner not found in the SDK or on PATH"
+            exit 1
+          fi
+          echo "re-signing with: $AS"
+
+          ZA=$(dirname "$AS")/zipalign
+          if [ -x "$ZA" ]; then
+            if "$ZA" -f -p 4 "$APK" "$APK.aligned" >/dev/null 2>&1; then
+              mv -f "$APK.aligned" "$APK"
+              echo "zipalign: ok"
+            else
+              echo "::warning::zipalign failed; re-signing the archive as it is"
+              rm -f "$APK.aligned"
+            fi
+          else
+            echo "::warning::zipalign not found; the APK is assumed already aligned"
+          fi
+
+          # v1 is kept alongside v2/v3 so the APK still installs on old devices.
+          # Older build-tools do not know --v3-signing-enabled (it appeared in
+          # 28.0.3), and a rejected flag would fail the whole step, so the
+          # full set is tried first and the minimal set is the fallback.
+          if ! "$AS" sign --ks "$KS" --ks-key-alias androiddebugkey \
+                 --ks-pass pass:android --key-pass pass:android \
+                 --v1-signing-enabled true --v2-signing-enabled true \
+                 --v3-signing-enabled true "$APK" >/dev/null 2>&1; then
+            echo "::warning::v3 flags rejected; falling back to v1 + v2 only"
+            "$AS" sign --ks "$KS" --ks-key-alias androiddebugkey \
+                  --ks-pass pass:android --key-pass pass:android \
+                  --v1-signing-enabled true --v2-signing-enabled true "$APK"
+          fi
+
+          echo "=== certificate now inside the APK ==="
+          "$AS" verify --print-certs "$APK" 2>&1 | head -20
+
+          # Confirm the fix actually took: read the APK back one more time and
+          # compare. Without this the step could only ever claim success, and a
+          # silently failed re-sign would ship exactly the APK that does not
+          # install.
+          norm() { tr -d ' :' | tr 'A-F' 'a-f'; }
+          AFTER=$("$AS" verify --print-certs "$APK" 2>&1 \
+                  | grep -iE 'SHA-?1' | head -1 \
+                  | sed -E 's/.*SHA-?1[^:]*: *//I' | norm)
+          WANT=$(keytool -list -v -keystore "$KS" -storepass android 2>/dev/null \
+                 | grep -i 'SHA1:' | head -1 | sed 's/.*SHA1: *//' | norm)
+
+          if [ -z "$AFTER" ] || [ -z "$WANT" ]; then
+            echo "::error::could not confirm the re-signed APK"
+            exit 1
+          fi
+          if [ "$AFTER" != "$WANT" ]; then
+            echo "::error::re-signing did not take effect"
+            echo "::error::expected $WANT, still $AFTER"
+            exit 1
+          fi
+          echo "::notice::re-signed and confirmed: $AFTER - this APK will install"
+          echo "::notice::in place over any build made with this key"
+
+      # Kept as well: artifacts survive even if the release step is skipped or
+      # fails, and they cost nothing extra.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: picokey-manager-uv
+          path: ${{ steps.locate.outputs.dir }}/bin/*.apk
+          if-no-files-found: error
+
+      # Runs unconditionally. The point is to make the single most confusing
+      # failure - "nothing showed up in Releases" - self-explaining: if the
+      # publish flag is off or the step is skipped, the log says so instead of
+      # leaving you to guess from a stale release timestamp.
+      - name: Report publish decision
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VER: ${{ steps.assets.outputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          echo "=== publish decision ==="
+          echo "  tag          : ${TAG:-(none)}"
+          echo "  version      : ${VER:-(none)}"
+          echo "  publish flag : ${PUBLISH:-(none)}"
+          if [ "${PUBLISH}" != "true" ]; then
+            echo "::warning::publish=false, so NO release will be created or updated."
+            echo "        The APK is still available from the 'picokey-manager-debug' artifact."
+          fi
+          echo "=== current releases on this repo ==="
+          gh release list --limit 20 || echo "(could not list releases - check GITHUB_TOKEN permissions)"
+
+      # ------------------------------------------------------------- release
+      - name: Build release notes
+        if: ${{ inputs.publish }}
+        env:
+          # TAG/VER come from the "Prepare release assets" step - they are not
+          # shell variables until they are exported here.
+          TAG: ${{ steps.assets.outputs.tag }}
+          VER: ${{ steps.assets.outputs.version }}
+          ARCH: arm64-v8a
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          # Bilingual on purpose: the app itself ships a zh/en switch and both
+          # READMEs exist, so the release page should not be English-only.
+          #
+          # The heredoc is quoted ('EOF') so ${TAG} and friends stay literal for
+          # the shell. Substitution is then done by Python's string.Template,
+          # which only touches the three placeholders we hand it - so a stray
+          # $ or ` in the prose cannot be expanded by accident. (envsubst would
+          # be the obvious tool but it lives in gettext-base, which is not
+          # guaranteed on every runner image.)
+          # Release notes are EXTRACTED FROM CHANGELOG.uv.md / CHANGELOG.uv.en.md,
+          # not written here. Editing the release text means editing those two
+          # files - this workflow stays untouched between releases.
+          cat > release/notes.tmpl <<'EOF'
+          # PicoKey Manager ${TAG}
+
+          <div align="right">
+
+          [English](#english) | [简体中文](#简体中文)
+
+          </div>
+
+          ---
+
+          ${ZH_BODY}
+
+          ---
+
+          ${EN_BODY}
+
+          `${GITHUB_SHA}` - v${VER} - ${ARCH} - debug build
+          EOF
+          python3 - <<'PYEOF'
+          import os, re
+          from string import Template
+
+          TAG = os.environ['TAG']
+          VER = os.environ['VER']
+          ARCH = os.environ.get('ARCH', 'arm64-v8a')
+
+          # Pull the block for VER out of a changelog file.
+          # Titles look like "## [v0.2.0] - 2026-09-26"; matching is on the
+          # version token inside the heading so a "v" prefix and a date are both
+          # optional. Returns "" when the file or the version is missing - the
+          # release is still produced, just without that body.
+          def section(path, lang):
+              try:
+                  text = open(path, encoding='utf-8').read()
+              except FileNotFoundError:
+                  print("::warning::%s not found - no %s body" % (path, lang))
+                  return ""
+              # Drop fenced blocks: the format example at the top contains
+              # "## [v0.3.0]" and must never be mistaken for a real entry.
+              text = re.sub(r'```.*?```', '', text, flags=re.S)
+              lines = text.split('\n')
+              # No \b here: in "v0.2.0" the "v" and the "0" are both word
+              # characters, so \b0\.2\.0\b never matches. Use digit/dot
+              # lookaround instead, which also stops 0.2.0 matching 0.2.01.
+              pat = re.compile(r'(?<![0-9.])' + re.escape(VER) + r'(?![0-9.])')
+              start = None
+              for i, line in enumerate(lines):
+                  m = re.match(r'^##\s+(.*)$', line)
+                  if m and pat.search(m.group(1)):
+                      start = i
+                      break
+              if start is None:
+                  print("::warning::no %s section in %s - add one" % (VER, path))
+                  return ""
+              end = len(lines)
+              for j in range(start + 1, len(lines)):
+                  if re.match(r'^##\s+', lines[j]):
+                      end = j
+                      break
+              return '\n'.join(lines[start + 1:end]).strip()
+
+          zh = section('CHANGELOG.uv.md', 'zh')
+          en = section('CHANGELOG.uv.en.md', 'en')
+          if not zh and not en:
+              print("::warning::no changelog entry at all for %s" % VER)
+
+          raw = open('release/notes.tmpl', encoding='utf-8').read()
+          out = Template(raw).safe_substitute(
+              TAG=TAG, VER=VER, ARCH=ARCH,
+              ZH_BODY=zh or ("(no entry for %s in CHANGELOG.md)" % VER),
+              EN_BODY=en or ("(no entry for %s in CHANGELOG.en.md)" % VER),
+              GITHUB_SHA=os.environ.get('GITHUB_SHA', 'unknown'),
+          )
+          open('release/notes.md', 'w', encoding='utf-8').write(out)
+          print("=== release notes ===")
+          print(out)
+          PYEOF
+          rm -f release/notes.tmpl
+          cat release/notes.md
+          # Guard: a literal ${...} left in the file means substitution missed.
+          if grep -n '\${' release/notes.md; then
+            echo "::error::unsubstituted placeholder left in release notes"
+            exit 1
+          fi
+
+      - name: Create or update GitHub Release
+        if: ${{ inputs.publish }}
+        env:
+          # GITHUB_TOKEN is enough here because `permissions: contents: write`
+          # is declared at the top of this file.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          VER: ${{ steps.assets.outputs.version }}
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          FLAGS=()
+          if [ "${{ inputs.draft }}" = "true" ]; then FLAGS+=(--draft); fi
+          if [ "${{ inputs.prerelease }}" = "true" ]; then FLAGS+=(--prerelease); fi
+
+          # APK only - see the note in the asset step above.
+          ASSETS=(release/*.apk)
+          echo "uploading: ${ASSETS[@]}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "${{ inputs.overwrite }}" != "true" ]; then
+              # Only reached when someone deliberately unticks the box. The
+              # default is now "replace", because the version stays put unless
+              # CHANGELOG.md gains a new section, and failing every rebuild
+              # over that helps nobody.
+              echo "::error::release $TAG already exists and 'overwrite' was unticked."
+              echo "::error::Raise 'version' in buildozer.spec (or add a CHANGELOG.md"
+              echo "::error::section) to publish a new version, or leave 'overwrite'"
+              echo "::error::ticked to replace $TAG in place."
+              echo ""
+              echo "Releases currently published:"
+              gh release list --limit 20 || true
+              exit 1
+            fi
+            echo "release $TAG exists - replacing the built assets (overwrite enabled)"
+            echo "::warning::$TAG was already published; this build replaces its APK."
+            # --clobber only overwrites same-named files; anything you added by
+            # hand stays untouched.
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            # keep notes in sync with this build
+            gh release edit "$TAG" --notes-file release/notes.md ${FLAGS[@]+"${FLAGS[@]}"}
+          else
+            echo "creating release $TAG"
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --title "PicoKey Manager $VER" \
+              --notes-file release/notes.md ${FLAGS[@]+"${FLAGS[@]}"}
+          fi
+
+          echo "=== release URL ==="
+          gh release view "$TAG" --json url --jq '.url'
+          echo "=== assets now in $TAG ==="
+          gh release view "$TAG" --json assets --jq '.assets[] | "  \(.name)  \(.size) bytes"'
+
+
+      # Commit the version bump back so the repo and the release agree.
+      # Placed last on purpose: only a build that actually produced an APK
+      # (and optionally published it) should consume a version number. If the
+      # build failed, the job already stopped and this never runs - so a red
+      # run cannot silently burn a version.
+      - name: Commit version bump
+        if: ${{ steps.resolve.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.resolve.outputs.version }}
+          PREV: ${{ steps.resolve.outputs.previous }}
+        run: |
+          cd "${{ steps.locate.outputs.dir }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Rebase first: another commit may have landed while the ~30 min
+          # build was running, and a bare push would then be rejected.
+          git pull --rebase --autostash origin "${{ github.ref_name }}" || \
+            echo "::warning::rebase failed, attempting push anyway"
+          git add buildozer.spec
+          if git diff --cached --quiet; then
+            echo "nothing to commit - buildozer.spec unchanged"
+            exit 0
+          fi
+          # [skip ci] is belt-and-braces: this workflow is manual-only
+          # (workflow_dispatch), so the push cannot re-trigger it anyway, but
+          # it keeps any future push-based workflow from firing.
+          git commit -m "chore: bump version ${PREV} -> ${VER} [skip ci]"
+          if git push origin "HEAD:${{ github.ref_name }}"; then
+            echo "::notice::buildozer.spec committed: ${PREV} -> ${VER}"
+          else
+            echo "::warning::could not push the version bump."
+            echo "::warning::The release went out as ${VER}, so edit buildozer.spec"
+            echo "::warning::to 'version = ${VER}' by hand or the next run will bump again."
+          fi
