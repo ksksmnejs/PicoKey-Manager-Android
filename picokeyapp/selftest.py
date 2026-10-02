@@ -9,6 +9,7 @@ Run from the shell:  python -m picokeyapp.selftest
 
 from __future__ import annotations
 
+import hashlib
 import os
 import struct
 import time
@@ -277,7 +278,11 @@ def _check(label, condition, detail=""):
 _NEEDS_APDU = ("btn_refresh", "btn_read_phy", "btn_write_phy",
                "btn_read_secure", "btn_secure_boot", "btn_reboot",
                "btn_reboot_bootsel")
-_NEEDS_CTAP = ("btn_wink", "btn_test_presence")
+_NEEDS_CTAP = ("btn_wink", "btn_test_presence",
+               # authenticatorConfig is CTAP-only: it is unreachable over CCID,
+               # and leaving these enabled on the CCID channel produces an error
+               # that looks like a bug rather than a wrong channel.
+               "btn_toggle_always_uv", "btn_set_min_pin")
 
 
 def _check_channel_gating():
@@ -327,6 +332,176 @@ def _check_channel_gating():
     out.append(_check("channel gating is applied on connect/disconnect",
                       bool(sync) and called >= 2,
                       f"_sync_channel defined={bool(sync)}, call sites={called}"))
+    return out
+
+
+def _check_uv_config() -> list:
+    """The PIN/UV handshake that gates authenticatorConfig.
+
+    These run against a fake authenticator that performs the device side for
+    real - its own ECDH, its own PIN check, its own verification of the auth
+    param. That is the point: a unit test of each half would pass while the two
+    halves disagreed about the key schedule, and the failure on real hardware
+    would look like "wrong PIN" forever.
+
+    `uvcrypto` is cross-checked against a known-answer vector because a bug in
+    the AES inverse column mix still encrypts correctly - it only shows up when
+    decrypting the token, which is the step that unlocks everything else.
+    """
+    from . import ctapcfg as C
+    from . import uvcrypto as U
+    from .cbor_mini import dumps, loads
+
+    out = []
+
+    # --- the primitives, against published vectors ------------------------
+    key = bytes.fromhex(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+    pt = bytes.fromhex("00112233445566778899aabbccddeeff")
+    ref = bytes.fromhex("8ea2b7ca516745bfeafc49904b496089")
+    rk = U._key_expansion(key)
+    out.append(_check("AES-256 matches the FIPS-197 known-answer vector",
+                      U._encrypt_block(pt, rk) == ref,
+                      U._encrypt_block(pt, rk).hex()))
+    out.append(_check("AES-256 decrypts its own output",
+                      U._decrypt_block(ref, rk) == pt,
+                      "the inverse column mix is wrong"))
+
+    secret = U.protocol1_shared_secret(b"\x01" * 32)
+    out.append(_check("PIN/UV protocol one derives SHA-256(x)",
+                      secret == hashlib.sha256(b"\x01" * 32).digest()))
+    out.append(_check("pinHashEnc survives a round trip",
+                      U.protocol1_decrypt(
+                          secret, U.protocol1_encrypt(
+                              secret, U.pin_hash("1234"))) == U.pin_hash("1234")))
+    out.append(_check("authenticate() truncates to 16 bytes",
+                      len(U.protocol1_authenticate(secret, b"\x0d\x02")) == 16))
+
+    # --- the handshake, end to end ---------------------------------------
+    class Fake:
+        """Device side of CTAP: real ECDH, real PIN check, real auth param."""
+
+        def __init__(self, pin):
+            self.pin = pin
+            self.priv, self.pub = U.p256_keypair()
+            self.secret = None
+            self.token = os.urandom(32)
+            self.always_uv = True
+            self.min_pin = None
+
+        def cbor(self, cmd, payload=b"", timeout=None, on_keepalive=None):
+            req = loads(payload) if payload else {}
+            if cmd == C.CMD_CLIENT_PIN:
+                sub = req[C.PIN_PARAM_SUBCOMMAND]
+                if sub == C.PIN_SUB_GET_KEY_AGREEMENT:
+                    return 0x00, dumps({
+                        C.PIN_RESP_KEY_AGREEMENT: C.encode_platform_pubkey(self.pub)})
+                if sub == C.PIN_SUB_GET_TOKEN_USING_PIN:
+                    peer = C.decode_device_pubkey(req[C.PIN_PARAM_KEY_AGREEMENT])
+                    self.secret = U.protocol1_shared_secret(
+                        U.p256_ecdh(self.priv, peer))
+                    if U.protocol1_decrypt(
+                            self.secret,
+                            req[C.PIN_PARAM_PIN_HASH_ENC]) != U.pin_hash(self.pin):
+                        return 0x31, b""
+                    if req[C.PIN_PARAM_PERMISSIONS] != C.PERM_AUTHENTICATOR_CFG:
+                        return 0x3E, b""
+                    return 0x00, dumps({
+                        C.PIN_RESP_PIN_TOKEN:
+                            U.protocol1_encrypt(self.secret, self.token)})
+                return 0x01, b""
+            if cmd == C.CMD_CONFIG:
+                sub = req[C.CFG_PARAM_SUBCOMMAND]
+                body = bytes([sub])
+                if C.CFG_PARAM_SUBCOMMAND_PARAMS in req:
+                    body += dumps(req[C.CFG_PARAM_SUBCOMMAND_PARAMS])
+                want = U.protocol1_authenticate(
+                    self.token, bytes([C.CMD_CONFIG]) + body)
+                if req[C.CFG_PARAM_AUTH_PARAM] != want:
+                    return 0x31, b""
+                if sub == C.CFG_SUB_TOGGLE_ALWAYS_UV:
+                    self.always_uv = not self.always_uv
+                elif sub == C.CFG_SUB_SET_MIN_PIN_LENGTH:
+                    self.min_pin = req[C.CFG_PARAM_SUBCOMMAND_PARAMS][0x01]
+                return 0x00, b""
+            return 0x01, b""
+
+    dev = Fake("123456")
+    cfg = C.UvConfig(dev)
+    try:
+        cfg.obtain_token("123456")
+        got_token = cfg._token == dev.token
+        same_secret = cfg._secret == dev.secret
+    except Exception as exc:                      # pragma: no cover
+        got_token = same_secret = False
+        out.append(_check("token exchange", False, f"{type(exc).__name__}: {exc}"))
+    if got_token:
+        out.append(_check("both sides derive the same shared secret", same_secret))
+        out.append(_check("the token comes back and decrypts", got_token))
+
+        before = dev.always_uv
+        cfg.toggle_always_uv()
+        out.append(_check("toggleAlwaysUv flips the authenticator's setting",
+                          dev.always_uv != before,
+                          f"{before} -> {dev.always_uv}"))
+        cfg.toggle_always_uv()
+        out.append(_check("toggling twice returns to the original state",
+                          dev.always_uv == before))
+
+    # A wrong PIN must be refused, and refused with a reason someone can act on.
+    try:
+        C.UvConfig(Fake("123456")).obtain_token("000000")
+        out.append(_check("a wrong PIN is refused", False, "it was accepted"))
+    except C.ConfigError as exc:
+        out.append(_check("a wrong PIN is refused, with a readable reason",
+                          "PIN" in str(exc), str(exc)))
+
+    # Tampering with the token must be caught by the authenticator: this is
+    # what stops a config change being applied under a token we never owned.
+    d2 = Fake("123456")
+    c2 = C.UvConfig(d2)
+    c2.obtain_token("123456")
+    c2._token = os.urandom(32)
+    try:
+        c2.toggle_always_uv()
+        out.append(_check("a forged token is rejected", False, "it was accepted"))
+    except C.ConfigError:
+        out.append(_check("a forged token is rejected", True))
+
+    # Configuring without a token at all is a programming error, not a device
+    # one; it must fail loudly rather than send an unauthenticated command.
+    try:
+        C.UvConfig(Fake("123456")).toggle_always_uv()
+        out.append(_check("config without a token is refused", False))
+    except C.ConfigError:
+        out.append(_check("config without a token is refused", True))
+
+    # setMinPINLength is one-way; the range check is the last cheap guard.
+    d3 = Fake("123456")
+    c3 = C.UvConfig(d3)
+    c3.obtain_token("123456")
+    refused = 0
+    for bad in (0, 3, 64, 100):
+        try:
+            c3.set_min_pin_length(bad)
+        except C.ConfigError:
+            refused += 1
+    out.append(_check("setMinPINLength rejects out-of-range values",
+                      refused == 4, f"refused {refused}/4"))
+
+    # Feature detection must key off authnrCfg, not the CTAP version string.
+    out.append(_check("config support is detected from authnrCfg",
+                      C.config_supported({"options": {"authnrCfg": True}})
+                      and not C.config_supported({"options": {}})))
+
+    # The P-256 domain parameters are easy to mistype by one digit; a point
+    # off the curve must be refused rather than silently used.
+    try:
+        U.p256_point_from_bytes(0, 0)
+        out.append(_check("an off-curve public key is rejected", False))
+    except U.EccError:
+        out.append(_check("an off-curve public key is rejected", True))
+
     return out
 
 
@@ -984,6 +1159,76 @@ def run() -> str:
                 if flasher.slip_decode(bytearray(w))[0][1] == op)
         lines.append(_check(label, n == want, f"sent {n}x, expected {want}x"))
 
+    # f4e) Multi-image flashing: an ESP32-S3 needs bootloader, partition table
+    # and app at three different offsets, and writing only the app at 0x0 is
+    # the failure this exists to prevent. What must hold is that all three go
+    # out over ONE connection - re-syncing between images is what lets the
+    # previous command's reply answer the next one.
+    class EchoConn(RecordingConn):
+        """Answers every command with a well-formed reply for that command."""
+
+        def __init__(self):
+            super().__init__([])
+            self.last = flasher.OP_SYNC
+            self.pending = bytearray()
+
+        def write(self, data, timeout=None):
+            self.written.append(bytes(data))
+            self.pending += bytes(data)
+            frame, used = flasher.slip_decode(self.pending)
+            if frame is not None:
+                self.last = frame[1]
+                del self.pending[:used]
+            return len(data)
+
+        def read(self, length=None, timeout=None):
+            return _ack(self.last)
+
+    three = [(0x0, b"\xe9" + b"\x00" * 63, "bootloader.bin"),
+             (0x8000, b"\xe9" + b"\x00" * 63, "partition-table.bin"),
+             (0x10000, b"\xe9" + b"\x00" * 63, "firmware.bin")]
+    mc = EchoConn()
+    seen_progress = []
+
+    class _Dev:
+        def interfaces_of_class(self, _cls):
+            return [0]
+
+    _real_usb = flasher.usbhost
+    try:
+        flasher.usbhost = type("U", (), {
+            "Connection": staticmethod(lambda *a, **k: mc)})()
+        flasher.flash_esp32_multi(
+            _Dev(), three,
+            progress=lambda i, n, d, b: seen_progress.append((i, n)))
+    finally:
+        flasher.usbhost = _real_usb
+
+    # Writes are chopped into endpoint-sized chunks, so an individual entry in
+    # `written` is often only part of a frame. Keep the ones that decode.
+    m_ops = [f[1] for f in _sent(mc) if f is not None]
+    n_begin = m_ops.count(flasher.OP_FLASH_BEGIN)
+    n_sync = m_ops.count(flasher.OP_SYNC)
+    lines.append(_check("three images are written over one connection",
+                        n_sync == 2,
+                        f"SYNC went out {n_sync} time(s), expected 2 (one sync)"))
+    lines.append(_check("each image gets its own FLASH_BEGIN",
+                        n_begin == 3, f"FLASH_BEGIN went out {n_begin}x"))
+    lines.append(_check("progress reports which image is being written",
+                        seen_progress and seen_progress[0][1] == 3,
+                        f"first callback was {seen_progress[0] if seen_progress else None}"))
+
+    # The offsets themselves. Getting these wrong is the whole reason the
+    # board stays dark, so they are pinned rather than left to whoever edits
+    # the guessing function next.
+    lines.append(_check("offsets are guessed from file names",
+                        (flasher.guess_offset("bootloader.bin") == 0x0
+                         and flasher.guess_offset("partition-table.bin") == 0x8000
+                         and flasher.guess_offset("pico_fido.bin") == 0x10000),
+                        f"bootloader={flasher.guess_offset('bootloader.bin'):#x}, "
+                        f"partition={flasher.guess_offset('partition-table.bin'):#x}, "
+                        f"app={flasher.guess_offset('pico_fido.bin'):#x}"))
+
     # f4d) flash() must clear the pipe just like erase_flash() does. It did
     # not, which is why the error surfaced during flashing while naming the
     # erase opcode - the two paths had drifted apart.
@@ -1069,6 +1314,7 @@ def run() -> str:
     lines.append("")
     lines.append("")
     lines.extend(_check_ins_table())
+    lines.extend(_check_uv_config())
 
     lines.append("")
     lines.append("")
