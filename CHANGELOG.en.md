@@ -65,6 +65,11 @@ are now one.
 
 ### Fixed
 
+- **The chip was never reset after flashing.** The FLASH_END argument is
+  backwards (0 reboots, 1 stays in the bootloader) and we always sent 1, so a
+  freshly flashed board sat in download mode: no LED (the LED is driven by
+  firmware) and a single USB interface — indistinguishable from a failed write.
+  Now it reboots by default; with several files, only after the last one
 - Crashed after removing a row from the multi-file list: the callback captured a
   row index that went out of range once the rows were renumbered
 - The self-test now reports its environment first, so a failure in a built app

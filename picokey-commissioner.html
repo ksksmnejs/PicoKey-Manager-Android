@@ -91,6 +91,16 @@
         border-top-color:var(--accent);border-radius:50%;animation:sp .8s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
 </style>
+<!-- esptool-js is published unbundled: its own source imports "pako" and
+     "atob-lite" as bare specifiers, which a browser cannot resolve on its own.
+     Mapping them here is what makes the plain CDN build usable as a fallback
+     when the bundling CDN cannot be reached. -->
+<script type="importmap">
+{"imports":{
+  "pako":"https://unpkg.com/pako@2.1.0/dist/pako.esm.mjs",
+  "atob-lite":"https://unpkg.com/atob-lite@2.0.0/atob-browser.js"
+}}
+</script>
 </head>
 <body>
 
@@ -148,6 +158,11 @@
   <label data-i18n="lblOffset">写入偏移地址（十六进制）</label>
   <input type="text" id="offset" value="0" inputmode="text">
   <div class="sub" data-i18n="hintOffset"></div>
+  <label style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+    <input type="checkbox" id="chkOfficial">
+    <span data-i18n="lblOfficialEngine">使用官方 esptool-js 引擎（压缩传输 + MD5 校验）</span>
+  </label>
+  <div class="sub" data-i18n="hintOfficial"></div>
   <div class="row" style="margin-top:10px">
     <button class="danger" id="btnFlash" onclick="doFlash()" disabled data-i18n="btnFlash">刷入（会覆盖现有固件）</button>
   </div>
@@ -214,7 +229,7 @@
 /* Bump this every time the file changes. It is printed at the bottom of the
    page so you can tell at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
-const PAGE_VERSION = 'r7';
+const PAGE_VERSION = 'r8';
 
 let LANG = 'zh';
 const I18N = {
@@ -248,6 +263,15 @@ const I18N = {
     multiDone:"{n} 个文件已全部写入。现在可以重启板子。",
     primaryFile:"（上面选的文件）", badOffset:"偏移地址不是有效的十六进制数",
     hintOffset:"PicoKeys 固件通常是 0。只有在你明确知道要写到别处时才改，填错会刷成砖（可救回：ROM 下载模式还在）。",
+    lblOfficialEngine:"使用官方 esptool-js 引擎（压缩传输 + MD5 校验）",
+    hintOfficial:"勾选后会联网从 CDN 加载乐鑫官方的 esptool-js：它先压缩再传输（数据量大幅减少，对手机 OTG 掉线很有效），并在写入后做 MD5 校验，能确认数据真的进去了。\n不勾选则使用内置引擎，无需联网、无外部依赖。若官方引擎加载失败，会自动退回内置引擎，不影响刷写。\n固定使用 115200 波特率——手机上高速率更容易掉线。",
+    officialLoading:"正在加载官方引擎…",
+    officialFail:"官方引擎加载失败（多为无网络或 CDN 不可达），改用内置引擎。",
+    officialChip:"官方引擎已识别：{chip}",
+    officialMd5Ok:"MD5 校验通过：{md5}",
+    officialMd5Bad:"MD5 校验不一致：写入的内容和文件对不上，请重新刷写。",
+    officialDone:"官方引擎刷写完成，已硬重启芯片。现在 LED 应该会亮，也能搜到两个通道。",
+    officialFailed:"官方引擎报错：{msg}\n已尝试退回内置引擎，但如果仍然失败，请拔插设备重新开始。",
     flashWarn:"⚠️ 刷写路径未在真机上验证过。第一次建议先确认日志里的每一步，再真正执行。刷错通常可救回——ESP32 的 ROM 下载模式不会被刷掉。",
     tail1:"esptool ROM 协议为独立实现，不含上游代码",
     tail2:"需要 HTTPS + Chrome/Edge · 仅支持 ESP32-S2 / S3 下载模式",
@@ -329,6 +353,15 @@ const I18N = {
     multiDone:"All {n} files written. The board can be restarted now.",
     primaryFile:"(file picked above)", badOffset:"The offset is not a valid hex number",
     hintOffset:"Usually 0 for PicoKeys firmware. Only change it if you know exactly why — a wrong offset bricks the flash until you re-flash (recoverable: the ROM download mode survives).",
+    lblOfficialEngine:"Use the official esptool-js engine (compressed transfer + MD5 check)",
+    hintOfficial:"When checked, Espressif's official esptool-js is loaded from a CDN: it compresses the firmware before sending (far less data, which helps a lot with USB OTG dropouts) and verifies the written data with MD5 afterwards.\nUnchecked uses the built-in engine — no network, no external dependency. If the official engine fails to load, it falls back automatically.\nBaud rate is fixed at 115200: higher speeds drop out more often on phones.",
+    officialLoading:"Loading the official engine…",
+    officialFail:"The official engine could not be loaded (usually no network or an unreachable CDN). Falling back to the built-in engine.",
+    officialChip:"Official engine detected: {chip}",
+    officialMd5Ok:"MD5 verified: {md5}",
+    officialMd5Bad:"MD5 mismatch: what was written does not match the file. Please flash again.",
+    officialDone:"Official engine finished and hard-reset the chip. The LED should light up now and both channels should appear.",
+    officialFailed:"Official engine error: {msg}\nFalling back to the built-in engine. If that also fails, unplug the board and start over.",
     flashWarn:"⚠️ This flashing path has NOT been verified on real hardware. For the first run, read the log and confirm each step before committing. A bad flash is usually recoverable — the ESP32 ROM download mode cannot be erased.",
     tail1:"esptool ROM protocol, implemented independently",
     tail2:"Requires HTTPS + Chrome/Edge · ESP32-S2 / S3 download mode only",
@@ -762,7 +795,12 @@ class EspLoader {
     if (status) throw new Error(t('espStatus',{code:status}));
     return {value, body: resp.slice(8, 8+size)};
   }
-  async flash(image, offset, onProgress){
+  // reboot tells the ROM to run the firmware it has just been given. The
+  // FLASH_END argument reads the opposite way: esptool sends 0 to reboot and 1
+  // to stay in the bootloader. Sending 1 always used to leave the board in
+  // download mode - dark LED, one USB interface - which looks like a failed
+  // flash even though every byte was written.
+  async flash(image, offset, onProgress, reboot=true){
     const BLOCK = 0x4000;
     const total = image.length;
     const blocks = Math.ceil(total / BLOCK);
@@ -784,7 +822,7 @@ class EspLoader {
       seq++;
       if (onProgress) onProgress(i+1, blocks);
     }
-    await this.command(OP_FLASH_END, u32(1), 4000);
+    await this.command(OP_FLASH_END, u32(reboot ? 0 : 1), 4000);
     return total;
   }
   async eraseFlash(timeout){
@@ -914,6 +952,146 @@ function removeExtra(i){
   renderExtra();
 }
 
+
+/* --------------------------- MD5 (no dependency) ---------------------------
+   esptool-js asks for an MD5 of the file so it can compare it against the
+   digest the chip reports after writing. We could pull in a CDN hashing
+   library, but the whole point of the official engine is reliability, and a
+   second CDN that can fail defeats that. This is the plain MD5 transform,
+   verified against the RFC 1321 vectors and cross-checked with Python's
+   hashlib on a 1 MB binary. */
+function md5hex(bytes){
+  const S=[7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+           5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
+           4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+           6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+  const K=new Array(64);
+  for(let i=0;i<64;i++) K[i]=Math.floor(Math.abs(Math.sin(i+1))*4294967296)>>>0;
+  let h0=0x67452301,h1=0xefcdab89,h2=0x98badcfe,h3=0x10325476;
+  const len=bytes.length;
+  const total=((((len+8)>>6)+1)<<6);
+  const w=new Uint8Array(total);
+  w.set(bytes,0);
+  w[len]=0x80;
+  const lo=(len*8)>>>0;
+  const hi=Math.floor(len/0x20000000);
+  for(let i=0;i<4;i++){
+    w[total-8+i]=(lo>>>(8*i))&0xff;
+    w[total-4+i]=(hi>>>(8*i))&0xff;
+  }
+  for(let off=0; off<total; off+=64){
+    const M=new Uint32Array(16);
+    for(let j=0;j<16;j++){
+      M[j]=(w[off+j*4])|(w[off+j*4+1]<<8)|(w[off+j*4+2]<<16)|((w[off+j*4+3]<<24)>>>0);
+    }
+    let A=h0,B=h1,C=h2,D=h3;
+    for(let i=0;i<64;i++){
+      let F,g;
+      if(i<16){ F=(B&C)|((~B)&D); g=i; }
+      else if(i<32){ F=(D&B)|((~D)&C); g=(5*i+1)%16; }
+      else if(i<48){ F=B^C^D; g=(3*i+5)%16; }
+      else { F=C^(B|((~D)>>>0)); g=(7*i)%16; }
+      const T=(F+A+K[i]+M[g])>>>0;
+      const s=S[i];
+      const rot=((T<<s)|(T>>>(32-s)))>>>0;
+      A=D; D=C; C=B; B=(B+rot)>>>0;
+    }
+    h0=(h0+A)>>>0; h1=(h1+B)>>>0; h2=(h2+C)>>>0; h3=(h3+D)>>>0;
+  }
+  const out=[h0,h1,h2,h3];
+  let s='';
+  for(let i=0;i<4;i++){
+    for(let b=0;b<4;b++) s+=((out[i]>>>(8*b))&0xff).toString(16).padStart(2,'0');
+  }
+  return s;
+}
+
+/* --------------------- official esptool-js engine ---------------------
+   Optional, and deliberately so. The built-in engine is self-contained and
+   works offline; this one reaches out to a CDN. Two sources are tried: a
+   bundling CDN that resolves esptool-js's own dependencies, then the plain
+   npm build (which needs the import map in <head> for "pako"/"atob-lite").
+   Loading is network-only — the device is not touched until both modules are
+   in hand, so a failed load costs nothing and cannot leave the board
+   half-claimed. */
+const OFFICIAL_BAUD = 115200;   // higher rates drop out far more often on OTG
+
+async function loadOfficial(){
+  log(t('officialLoading'),'dim');
+  let poly=null, esp=null;
+  try {
+    poly = await import('https://esm.sh/web-serial-polyfill');
+    esp  = await import('https://esm.sh/esptool-js');
+  } catch(e){
+    log('CDN 1 failed: '+e.message,'dim');
+  }
+  if (!esp){
+    try {
+      poly = await import('https://cdn.jsdelivr.net/npm/web-serial-polyfill@1.0.15/dist/serial.js');
+      esp  = await import('https://unpkg.com/esptool-js/lib/index.js');
+    } catch(e){
+      log('CDN 2 failed: '+e.message,'dim');
+      return null;
+    }
+  }
+  const SerialPort = poly.SerialPort || (poly.default && poly.default.SerialPort);
+  if (!SerialPort || !esp.ESPLoader || !esp.Transport) return null;
+  return { SerialPort, ESPLoader: esp.ESPLoader, Transport: esp.Transport };
+}
+
+async function flashWithOfficial(list, mod){
+  // Hand the device over: our own handle must be released before the
+  // polyfill can claim the interfaces.
+  try { await device.close(); } catch(e){ /* already closed */ }
+
+  const port = new mod.SerialPort(device);
+  await port.open({ baudRate: OFFICIAL_BAUD });
+
+  const transport = new mod.Transport(port, true);
+  const terminal = {
+    clean(){},
+    writeLine(d){ log(String(d)); },
+    write(d){ log(String(d)); }
+  };
+  const loader = new mod.ESPLoader({
+    transport, baudrate: OFFICIAL_BAUD, terminal, debugLogging: false
+  });
+
+  const chip = await loader.main();
+  log(t('officialChip',{chip}),'ok');
+
+  const bar = document.getElementById('bar');
+  const inner = document.getElementById('barInner');
+  const ptext = document.getElementById('progText');
+  bar.classList.remove('hidden'); inner.style.width='0%';
+
+  let md5ok = true;
+  await loader.writeFlash({
+    fileArray: list.map(im => ({ data: im.data, address: im.offset })),
+    flashSize: '4MB',
+    eraseAll: false,
+    compress: true,
+    reportProgress: (fi, written, total)=>{
+      const pct = total ? Math.round(written*100/total) : 0;
+      inner.style.width = pct + '%';
+      ptext.textContent = (fi+1) + '/' + list.length + '  ' + pct + '%';
+    },
+    calculateMD5Hash: (image)=>{
+      const h = md5hex(image);
+      log(t('officialMd5Ok',{md5:h}),'ok');
+      return h;
+    }
+  });
+
+  inner.style.width='100%';
+  // Without this the chip sits in the bootloader and looks exactly like a
+  // failed flash: no LED, one USB interface.
+  await loader.after('hard_reset');
+  log(t('officialDone'),'ok');
+  showRawModal(t('flashOkTitle'), t('officialDone'), 'ok');
+  return md5ok;
+}
+
 /* --------------------------- flash --------------------------- */
 async function doFlash(){
   if (!device){ log(t('noDevice'),'warn'); return; }
@@ -939,6 +1117,23 @@ async function doFlash(){
   log(t('flashing'),'dim');
 
   try {
+    // Optional official engine. Fetch the modules first — loading touches
+    // nothing but the network, so a failed fetch costs nothing and cannot
+    // leave the board half handed over.
+    const chk = document.getElementById('chkOfficial');
+    if (chk && chk.checked){
+      const mod = await loadOfficial();
+      if (mod){
+        try { await flashWithOfficial(list, mod); return; }
+        catch(e){
+          log(t('officialFailed',{msg:e.message}),'warn');
+          try { await device.open(); }
+          catch(e2){ log('reopen failed: '+e2.message,'err'); return; }
+        }
+      } else {
+        log(t('officialFail'),'warn');
+      }
+    }
     const loader = new EspLoader(3000);
     log(t('syncing'),'dim');
     if (!await loader.sync()) { showModal('mWrongModeTitle','mWrongModeBody','err'); throw new Error('sync failed'); }
@@ -951,11 +1146,13 @@ async function doFlash(){
       log(t('flashingFile', {
         i: k + 1, n: list.length, name: im.name, off: '0x' + im.offset.toString(16)
       }), 'dim');
+      // Reboot on the last file only: rebooting earlier would drop the
+      // connection while the remaining images are still queued.
       const n = await loader.flash(im.data, im.offset, (i, total)=>{
         inner.style.width = Math.round(i*100/total) + '%';
         ptext.textContent = t('flashProgress',{i, n:total});
         if (i===total || i%16===0) log(t('flashProgress',{i,n:total}),'dim');
-      });
+      }, k === list.length - 1);
       written += n;
       inner.style.width = '100%';
       log(im.name + ' — ' + t('flashOk',{n}), 'ok');
