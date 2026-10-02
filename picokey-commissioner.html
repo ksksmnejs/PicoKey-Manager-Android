@@ -163,6 +163,11 @@
     <span data-i18n="lblOfficialEngine">使用官方 esptool-js 引擎（压缩传输 + MD5 校验）</span>
   </label>
   <div class="sub" data-i18n="hintOfficial"></div>
+  <label style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
+    <input type="checkbox" id="chkNoStub" checked>
+    <span data-i18n="lblNoStub">跳过 flasher stub（推荐，ESP32-S3 原生 USB 必选）</span>
+  </label>
+  <div class="sub" data-i18n="hintNoStub"></div>
   <div class="row" style="margin-top:10px">
     <button class="danger" id="btnFlash" onclick="doFlash()" disabled data-i18n="btnFlash">刷入（会覆盖现有固件）</button>
   </div>
@@ -229,7 +234,7 @@
 /* Bump this every time the file changes. It is printed at the bottom of the
    page so you can tell at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
-const PAGE_VERSION = 'r8';
+const PAGE_VERSION = 'r9';
 
 let LANG = 'zh';
 const I18N = {
@@ -265,8 +270,13 @@ const I18N = {
     hintOffset:"PicoKeys 固件通常是 0。只有在你明确知道要写到别处时才改，填错会刷成砖（可救回：ROM 下载模式还在）。",
     lblOfficialEngine:"使用官方 esptool-js 引擎（压缩传输 + MD5 校验）",
     hintOfficial:"勾选后会联网从 CDN 加载乐鑫官方的 esptool-js：它先压缩再传输（数据量大幅减少，对手机 OTG 掉线很有效），并在写入后做 MD5 校验，能确认数据真的进去了。\n不勾选则使用内置引擎，无需联网、无外部依赖。若官方引擎加载失败，会自动退回内置引擎，不影响刷写。\n固定使用 115200 波特率——手机上高速率更容易掉线。",
+    lblNoStub:"跳过 flasher stub（推荐，ESP32-S3 原生 USB 必选）",
+    hintNoStub:"esptool 默认会往芯片 RAM 传一个 stub 小程序来提速，但它在 ESP32-S3 的原生 USB（USB Serial/JTAG）上会掉流，\n表现就是刷写刚要开始就报 “Invalid head of packet (0x45)”——0x45 是字母 E，来自芯片重启后打印的 ROM 日志。\n勾选后只走芯片自带的 ROM 协议，速度慢些（约 100 秒/MB，这个文件大概 1 分钟），但不会掉流。\n如果跳过 stub 后报 SPI 连接失败，再取消勾选试一次。",
+    officialNoStub:"已跳过 stub，直接使用芯片 ROM 协议",
+    officialStub:"使用 stub（若卡在 Uploading stub 请勾选“跳过 stub”）",
     officialLoading:"正在加载官方引擎…",
     officialFail:"官方引擎加载失败（多为无网络或 CDN 不可达），改用内置引擎。",
+    officialDirty:"官方引擎失败后，芯片 RAM 里可能残留半截 stub，ROM 不再正常应答。\n内置引擎很可能也连不上——建议拔掉、按住 BOOT 重新插入后再试。",
     officialChip:"官方引擎已识别：{chip}",
     officialMd5Ok:"MD5 校验通过：{md5}",
     officialMd5Bad:"MD5 校验不一致：写入的内容和文件对不上，请重新刷写。",
@@ -353,10 +363,15 @@ const I18N = {
     multiDone:"All {n} files written. The board can be restarted now.",
     primaryFile:"(file picked above)", badOffset:"The offset is not a valid hex number",
     hintOffset:"Usually 0 for PicoKeys firmware. Only change it if you know exactly why — a wrong offset bricks the flash until you re-flash (recoverable: the ROM download mode survives).",
+    lblNoStub:"Skip the flasher stub (recommended, required on ESP32-S3 native USB)",
+    hintNoStub:"esptool normally uploads a small stub into the chip's RAM to speed things up, but on the ESP32-S3's\nnative USB (USB Serial/JTAG) that stub drops the stream: flashing dies right at the start with\n\"Invalid head of packet (0x45)\" — 0x45 is the letter E, the first byte of the ROM log the chip prints\nafter it reboots.\nSkipping it uses only the chip's own ROM protocol: slower (~100 s/MB, about a minute for this file)\nbut it does not drop out. If skipping the stub gives an SPI attach error, uncheck this and retry.",
+    officialNoStub:"Stub skipped, using the chip's ROM protocol",
+    officialStub:"Using the stub (if it hangs at \"Uploading stub\", tick \"skip the stub\")",
     lblOfficialEngine:"Use the official esptool-js engine (compressed transfer + MD5 check)",
     hintOfficial:"When checked, Espressif's official esptool-js is loaded from a CDN: it compresses the firmware before sending (far less data, which helps a lot with USB OTG dropouts) and verifies the written data with MD5 afterwards.\nUnchecked uses the built-in engine — no network, no external dependency. If the official engine fails to load, it falls back automatically.\nBaud rate is fixed at 115200: higher speeds drop out more often on phones.",
     officialLoading:"Loading the official engine…",
     officialFail:"The official engine could not be loaded (usually no network or an unreachable CDN). Falling back to the built-in engine.",
+    officialDirty:"A failed stub run can leave half of the stub in the chip's RAM, after which the ROM no longer answers\ncleanly \u2014 the built-in engine will probably fail too. Unplug, hold BOOT, plug back in, then try again.",
     officialChip:"Official engine detected: {chip}",
     officialMd5Ok:"MD5 verified: {md5}",
     officialMd5Bad:"MD5 mismatch: what was written does not match the file. Please flash again.",
@@ -1039,7 +1054,7 @@ async function loadOfficial(){
   return { SerialPort, ESPLoader: esp.ESPLoader, Transport: esp.Transport };
 }
 
-async function flashWithOfficial(list, mod){
+async function flashWithOfficial(list, mod, skipStub){
   // Hand the device over: our own handle must be released before the
   // polyfill can claim the interfaces.
   try { await device.close(); } catch(e){ /* already closed */ }
@@ -1056,6 +1071,21 @@ async function flashWithOfficial(list, mod){
   const loader = new mod.ESPLoader({
     transport, baudrate: OFFICIAL_BAUD, terminal, debugLogging: false
   });
+
+  /* --no-stub.
+     esptool always uploads a stub into the chip's RAM, but on the ESP32-S3's
+     native USB Serial/JTAG that stub drops the stream: the very first flash
+     command dies with "Invalid head of packet (0x45)" because the chip has
+     already rebooted and is printing its ROM log ('E' of "ESP-ROM:...").
+     main() calls this.runStub() before it returns, so replacing it on the
+     instance leaves the loader on the ROM command paths, which is exactly
+     what esptool's --no-stub does. */
+  if (skipStub){
+    loader.runStub = async function(){ return loader; };
+    log(t('officialNoStub'),'dim');
+  } else {
+    log(t('officialStub'),'dim');
+  }
 
   const chip = await loader.main();
   log(t('officialChip',{chip}),'ok');
@@ -1122,11 +1152,16 @@ async function doFlash(){
     // leave the board half handed over.
     const chk = document.getElementById('chkOfficial');
     if (chk && chk.checked){
+      const chkStub = document.getElementById('chkNoStub');
+      const skipStub = !chkStub || chkStub.checked;
       const mod = await loadOfficial();
       if (mod){
-        try { await flashWithOfficial(list, mod); return; }
+        try { await flashWithOfficial(list, mod, skipStub); return; }
         catch(e){
           log(t('officialFailed',{msg:e.message}),'warn');
+          // A failed stub run leaves the chip's RAM dirty and the ROM no
+          // longer answers cleanly, so the fallback usually needs a replug.
+          log(t('officialDirty'),'warn');
           try { await device.open(); }
           catch(e2){ log('reopen failed: '+e2.message,'err'); return; }
         }
