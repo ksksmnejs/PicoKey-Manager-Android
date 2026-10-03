@@ -164,8 +164,8 @@
   </label>
   <div class="sub" data-i18n="hintOfficial"></div>
   <label style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
-    <input type="checkbox" id="chkNoStub" checked>
-    <span data-i18n="lblNoStub">跳过 flasher stub（推荐，ESP32-S3 原生 USB 必选）</span>
+    <input type="checkbox" id="chkNoStub">
+    <span data-i18n="lblNoStub">跳过 flasher stub（仅万不得已时勾：内置 flash 的板子读不到 flash）</span>
   </label>
   <div class="sub" data-i18n="hintNoStub"></div>
   <div class="row" style="margin-top:10px">
@@ -234,7 +234,7 @@
 /* Bump this every time the file changes. It is printed at the bottom of the
    page so you can tell at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
-const PAGE_VERSION = 'r9';
+const PAGE_VERSION = 'r10';
 
 let LANG = 'zh';
 const I18N = {
@@ -270,9 +270,14 @@ const I18N = {
     hintOffset:"PicoKeys 固件通常是 0。只有在你明确知道要写到别处时才改，填错会刷成砖（可救回：ROM 下载模式还在）。",
     lblOfficialEngine:"使用官方 esptool-js 引擎（压缩传输 + MD5 校验）",
     hintOfficial:"勾选后会联网从 CDN 加载乐鑫官方的 esptool-js：它先压缩再传输（数据量大幅减少，对手机 OTG 掉线很有效），并在写入后做 MD5 校验，能确认数据真的进去了。\n不勾选则使用内置引擎，无需联网、无外部依赖。若官方引擎加载失败，会自动退回内置引擎，不影响刷写。\n固定使用 115200 波特率——手机上高速率更容易掉线。",
-    lblNoStub:"跳过 flasher stub（推荐，ESP32-S3 原生 USB 必选）",
-    hintNoStub:"esptool 默认会往芯片 RAM 传一个 stub 小程序来提速，但它在 ESP32-S3 的原生 USB（USB Serial/JTAG）上会掉流，\n表现就是刷写刚要开始就报 “Invalid head of packet (0x45)”——0x45 是字母 E，来自芯片重启后打印的 ROM 日志。\n勾选后只走芯片自带的 ROM 协议，速度慢些（约 100 秒/MB，这个文件大概 1 分钟），但不会掉流。\n如果跳过 stub 后报 SPI 连接失败，再取消勾选试一次。",
+    lblNoStub:"跳过 flasher stub（默认不要勾——跳过后 eFuse 引脚配置被忽略，内置 flash 的板子会读不到）",
+    hintNoStub:"乐鑫官方文档写明：未提供 --spi-connection 时，flash 引脚按 eFuse 配置；唯一的例外是同时使用 --no-stub，\n此时 eFuse 值被忽略、退回默认引脚。\n你这颗芯片是「内置 Flash 4MB (XMC)」，封装内 flash 用的是专用引脚，不是默认引脚，\n所以跳过 stub 会读不到芯片（日志里 Flash ID: ffffff 就是证据）。\n默认不勾：让 esptool 正常上传 stub，由 stub 读 eFuse 配好引脚。\n只有当你确实看到 “Uploading stub” 卡死时，才勾上试一次。",
     officialNoStub:"已跳过 stub，直接使用芯片 ROM 协议",
+    officialAttempt:"第 {n} 次尝试连接失败：{msg}",
+    officialRetry:"复位芯片后重试（{i}/{n}）…",
+    officialFlashId:"Flash ID：{id}",
+    officialNoFlash:"读不到 flash 芯片（Flash ID {id}）。\n跳过 stub 时 eFuse 里的引脚配置会被忽略，而你这颗是内置 flash，用的不是默认引脚。\n请取消勾选「跳过 flasher stub」再来一次——这条路径走不通，不要再点刷写。",
+    officialNoFlashStub:"读不到 flash 芯片（Flash ID {id}）。\n先拔掉、按住 BOOT 重新插入，再试一次；仍不行就是供电不足（换短 OTG 线或外接电源）。",
     officialStub:"使用 stub（若卡在 Uploading stub 请勾选“跳过 stub”）",
     officialLoading:"正在加载官方引擎…",
     officialFail:"官方引擎加载失败（多为无网络或 CDN 不可达），改用内置引擎。",
@@ -363,9 +368,14 @@ const I18N = {
     multiDone:"All {n} files written. The board can be restarted now.",
     primaryFile:"(file picked above)", badOffset:"The offset is not a valid hex number",
     hintOffset:"Usually 0 for PicoKeys firmware. Only change it if you know exactly why — a wrong offset bricks the flash until you re-flash (recoverable: the ROM download mode survives).",
-    lblNoStub:"Skip the flasher stub (recommended, required on ESP32-S3 native USB)",
-    hintNoStub:"esptool normally uploads a small stub into the chip's RAM to speed things up, but on the ESP32-S3's\nnative USB (USB Serial/JTAG) that stub drops the stream: flashing dies right at the start with\n\"Invalid head of packet (0x45)\" — 0x45 is the letter E, the first byte of the ROM log the chip prints\nafter it reboots.\nSkipping it uses only the chip's own ROM protocol: slower (~100 s/MB, about a minute for this file)\nbut it does not drop out. If skipping the stub gives an SPI attach error, uncheck this and retry.",
+    lblNoStub:"Skip the flasher stub (leave off \u2014 skipping ignores the eFuse pin config, so in-package flash disappears)",
+    hintNoStub:"Espressif's documentation states that without --spi-connection the flash pins come from eFuse,\nand the one exception is --no-stub: then the eFuse values are ignored and defaults are used.\nThis chip reports \"Embedded Flash 4MB (XMC)\", and in-package flash sits on dedicated pads rather\nthan the default pins, so skipping the stub leaves the flash unreachable (\"Flash ID: ffffff\").\nLeave this off: esptool uploads its stub, which reads eFuse and sets the pins up correctly.\nOnly tick it if you actually see it hang at \"Uploading stub\".",
     officialNoStub:"Stub skipped, using the chip's ROM protocol",
+    officialAttempt:"Connection attempt {n} failed: {msg}",
+    officialRetry:"Resetting the chip and retrying ({i}/{n})\u2026",
+    officialFlashId:"Flash ID: {id}",
+    officialNoFlash:"The flash chip does not answer (Flash ID {id}).\nWith the stub skipped, the pin configuration stored in eFuse is ignored \u2014 and this chip has in-package\nflash on dedicated pads, not the default pins.\nUntick \"skip the flasher stub\" and try again. This path cannot work; do not just retry the write.",
+    officialNoFlashStub:"The flash chip does not answer (Flash ID {id}).\nUnplug, hold BOOT, plug back in and try again. If it keeps failing the board is under-powered\n(use a short OTG cable or supply 5 V separately).",
     officialStub:"Using the stub (if it hangs at \"Uploading stub\", tick \"skip the stub\")",
     lblOfficialEngine:"Use the official esptool-js engine (compressed transfer + MD5 check)",
     hintOfficial:"When checked, Espressif's official esptool-js is loaded from a CDN: it compresses the firmware before sending (far less data, which helps a lot with USB OTG dropouts) and verifies the written data with MD5 afterwards.\nUnchecked uses the built-in engine — no network, no external dependency. If the official engine fails to load, it falls back automatically.\nBaud rate is fixed at 115200: higher speeds drop out more often on phones.",
@@ -424,7 +434,7 @@ const I18N = {
     mWrongModeBody:"Connected, but the handshake failed — the bootloader did not answer.\n\nThat usually means the board is not in download mode: it is running firmware normally (which uses CCID and could not be claimed at all), or it is running something else.\n\nPut it into download mode and try again; the method differs per board, so check the board's documentation.",
     mFlashFailTitle:"Flash failed",
     mFlashFailBody:"Something went wrong while flashing.\n\nAn ESP32 is usually recoverable: the ROM download mode cannot be erased, so re-enter download mode and flash again.\n\nSee the log for the exact error.",
-    changelogText:"2026-10-09\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when your copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· Previously authorised devices are reused on load\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
+    changelogText:"2026-10-09\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when your copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· The stub is used again by default: Espressif documents that --no-stub makes\n  esptool ignore the flash pins stored in eFuse, so in-package flash is unreachable\n· Before writing, the flash ID is read; if the flash does not answer the page stops\n  immediately with the reason instead of compressing 700 KB and dying mid-write\n· Connect, sync and stub upload are retried three times with a chip reset between\n  attempts (a dropped stream needs a reset, not a replug)\n· Reset after flashing tries the watchdog reset first (USB Serial/JTAG has no RTS,\n  so hard_reset does nothing there)\n· Tapping connect twice no longer opens and claims the same device twice\n· Previously authorised devices are reused on load\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
   }
 };
 
@@ -569,6 +579,14 @@ function pickEspInterface(dev){
 async function connect(){
   if (!navigator.usb){ log(t('noWebUSB'),'err'); return; }
   if (!window.isSecureContext){ log(t('notSecure'),'err'); return; }
+
+  // Tapping connect twice used to open and claim the same device again on top
+  // of the previous handle. Two readers on one pipe is a fine way to produce
+  // "Invalid head of packet": the second one eats bytes meant for the first.
+  if (device){
+    log(LANG==='zh' ? '已有连接，先释放再重连。' : 'Already connected; releasing first.', 'dim');
+    await disconnect();
+  }
 
   // Reuse an already authorised device: requestDevice() is the only call that
   // can come up empty, and re-picking something the user already granted is
@@ -1054,7 +1072,12 @@ async function loadOfficial(){
   return { SerialPort, ESPLoader: esp.ESPLoader, Transport: esp.Transport };
 }
 
-async function flashWithOfficial(list, mod, skipStub){
+function _sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+/* Open the port, hand it to esptool-js and get as far as a detected chip.
+   Kept separate from the writing so a dropped stream can simply be retried:
+   the chip only needs a reset between attempts, not a replug. */
+async function openOfficialLoader(mod, skipStub){
   // Hand the device over: our own handle must be released before the
   // polyfill can claim the interfaces.
   try { await device.close(); } catch(e){ /* already closed */ }
@@ -1073,13 +1096,12 @@ async function flashWithOfficial(list, mod, skipStub){
   });
 
   /* --no-stub.
-     esptool always uploads a stub into the chip's RAM, but on the ESP32-S3's
-     native USB Serial/JTAG that stub drops the stream: the very first flash
-     command dies with "Invalid head of packet (0x45)" because the chip has
-     already rebooted and is printing its ROM log ('E' of "ESP-ROM:...").
-     main() calls this.runStub() before it returns, so replacing it on the
-     instance leaves the loader on the ROM command paths, which is exactly
-     what esptool's --no-stub does. */
+     esptool always uploads a stub into the chip's RAM. main() calls
+     this.runStub() before it returns, so replacing it on the instance leaves
+     the loader on the ROM command paths, which is exactly what --no-stub does.
+     Note this is normally the WRONG choice here: Espressif documents that
+     --no-stub makes the tool ignore the flash pins stored in eFuse, and this
+     chip's flash is in-package, so the ROM cannot reach it (Flash ID ffffff). */
   if (skipStub){
     loader.runStub = async function(){ return loader; };
     log(t('officialNoStub'),'dim');
@@ -1088,7 +1110,47 @@ async function flashWithOfficial(list, mod, skipStub){
   }
 
   const chip = await loader.main();
-  log(t('officialChip',{chip}),'ok');
+  return { port, loader, chip };
+}
+
+async function flashWithOfficial(list, mod, skipStub){
+  const ATTEMPTS = 3;
+  let att = null;
+  for (let i=1; i<=ATTEMPTS; i++){
+    try {
+      att = await openOfficialLoader(mod, skipStub);
+      break;
+    } catch(e){
+      const msg = String((e && e.message) || e);
+      log(t('officialAttempt',{n:i, msg}), i===ATTEMPTS ? 'err' : 'warn');
+      if (i === ATTEMPTS) throw e;
+      log(t('officialRetry',{i:i+1, n:ATTEMPTS}),'dim');
+      try { await device.reset(); } catch(_){ /* may be refused */ }
+      await _sleep(1500);
+    }
+  }
+  const loader = att.loader;
+  log(t('officialChip',{chip:att.chip}),'ok');
+
+  /* Pre-flight: is the flash actually reachable?
+     esptool reads the flash ID during main() but only warns about it, so a
+     board it cannot talk to still gets 700 KB compressed and sent before the
+     write dies. Checking here fails immediately with the real reason. */
+  if (typeof loader.readFlashId === 'function'){
+    let fid = null;
+    try { fid = await loader.readFlashId(); } catch(e){ fid = null; }
+    if (fid != null){
+      const s = ('000000' + ((fid >>> 0).toString(16))).slice(-6);
+      const dead = (fid === 0xFFFFFF || fid === 0x000000);
+      log(t('officialFlashId',{id:s}), dead ? 'err' : 'ok');
+      if (dead){
+        const body = skipStub ? t('officialNoFlash',{id:s}) : t('officialNoFlashStub',{id:s});
+        log(body,'err');
+        showRawModal(t('mFlashFailTitle'), body, 'err');
+        return false;
+      }
+    }
+  }
 
   const bar = document.getElementById('bar');
   const inner = document.getElementById('barInner');
@@ -1116,7 +1178,12 @@ async function flashWithOfficial(list, mod, skipStub){
   inner.style.width='100%';
   // Without this the chip sits in the bootloader and looks exactly like a
   // failed flash: no LED, one USB interface.
-  await loader.after('hard_reset');
+  // hard_reset pulls RTS, which USB Serial/JTAG does not have at all, so
+  // Espressif recommends the watchdog reset for exactly this case.
+  try { await loader.after('watchdog_reset'); }
+  catch(e){
+    try { await loader.after('hard_reset'); } catch(e2){ /* best effort */ }
+  }
   log(t('officialDone'),'ok');
   showRawModal(t('flashOkTitle'), t('officialDone'), 'ok');
   return md5ok;
