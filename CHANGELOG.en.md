@@ -66,7 +66,7 @@ are now one.
 ### Fixed
 
 - **The chip was never reset after flashing.** The FLASH_END argument is
-  backwards (0 reboots, 1 stays in the bootloader) and we always sent 1, so a
+  backwards (0 reboots, 1 stays in the bootloader) and the code always sent 1, so a
   freshly flashed board sat in download mode: no LED (the LED is driven by
   firmware) and a single USB interface — indistinguishable from a failed write.
   Now it reboots by default; with several files, only after the last one

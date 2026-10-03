@@ -233,7 +233,7 @@
    ========================================================================= */
 
 /* Bump this every time the file changes. It is printed at the bottom of the
-   page so you can tell at a glance whether the browser is showing the current
+   page so it is obvious at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
 const PAGE_VERSION = 'r11';
 
@@ -247,7 +247,7 @@ const I18N = {
     secLog:"日志", secChangelog:"更新日志", changelogTitle:"本页的更新记录",
     btnReload:"强制刷新",
     tailVer:"页面版本", tailVerHint:"（刷新后仍是这个号，说明 Pages 还没部署完，等几分钟）",
-    staleText:"GitHub Pages 上已经是更新的版本了，你现在看到的是缓存里的旧页面。",
+    staleText:"GitHub Pages 上已经是更新的版本了，当前显示的是缓存中的旧页面。",
     checkingUpdate:"正在检查页面版本…",
     updateCheckFailed:"版本检查没能完成（不影响刷写功能）",
     btnConnect:"选择 USB 设备", btnDiag:"诊断接口", btnListen:"监听原始输出", btnDisconnect:"断开",
@@ -268,16 +268,16 @@ const I18N = {
     flashingFile:"正在写入第 {i}/{n} 个：{name} → {off}",
     multiDone:"{n} 个文件已全部写入。现在可以重启板子。",
     primaryFile:"（上面选的文件）", badOffset:"偏移地址不是有效的十六进制数",
-    hintOffset:"PicoKeys 固件通常是 0。只有在你明确知道要写到别处时才改，填错会刷成砖（可救回：ROM 下载模式还在）。",
+    hintOffset:"PicoKeys 固件通常是 0。仅在明确需要写入其他地址时才修改，填错会刷成砖（可救回：ROM 下载模式还在）。",
     lblOfficialEngine:"使用官方 esptool-js 引擎（压缩传输 + MD5 校验）",
     hintOfficial:"勾选后会联网从 CDN 加载乐鑫官方的 esptool-js：它先压缩再传输（数据量大幅减少，对手机 OTG 掉线很有效），并在写入后做 MD5 校验，能确认数据真的进去了。\n不勾选则使用内置引擎，无需联网、无外部依赖。若官方引擎加载失败，会自动退回内置引擎，不影响刷写。\n固定使用 115200 波特率——手机上高速率更容易掉线。",
     lblNoStub:"跳过 flasher stub（默认不要勾——跳过后 eFuse 引脚配置被忽略，内置 flash 的板子会读不到）",
-    hintNoStub:"乐鑫官方文档写明：未提供 --spi-connection 时，flash 引脚按 eFuse 配置；唯一的例外是同时使用 --no-stub，\n此时 eFuse 值被忽略、退回默认引脚。\n你这颗芯片是「内置 Flash 4MB (XMC)」，封装内 flash 用的是专用引脚，不是默认引脚，\n所以跳过 stub 会读不到芯片（日志里 Flash ID: ffffff 就是证据）。\n默认不勾：让 esptool 正常上传 stub，由 stub 读 eFuse 配好引脚。\n只有当你确实看到 “Uploading stub” 卡死时，才勾上试一次。",
+    hintNoStub:"乐鑫官方文档写明：未提供 --spi-connection 时，flash 引脚按 eFuse 配置；唯一的例外是同时使用 --no-stub，\n此时 eFuse 值被忽略、退回默认引脚。\n当前芯片为「内置 Flash 4MB (XMC)」，封装内 flash 用的是专用引脚，不是默认引脚，\n所以跳过 stub 会读不到芯片（日志里 Flash ID: ffffff 就是证据）。\n默认不勾：让 esptool 正常上传 stub，由 stub 读 eFuse 配好引脚。\n仅当确实出现 “Uploading stub” 卡死时，才勾上试一次。",
     officialNoStub:"已跳过 stub，直接使用芯片 ROM 协议",
     officialAttempt:"第 {n} 次尝试连接失败：{msg}",
     officialRetry:"复位芯片后重试（{i}/{n}）…",
     officialFlashId:"Flash ID：{id}",
-    officialNoFlash:"读不到 flash 芯片（Flash ID {id}）。\n跳过 stub 时 eFuse 里的引脚配置会被忽略，而你这颗是内置 flash，用的不是默认引脚。\n请取消勾选「跳过 flasher stub」再来一次——这条路径走不通，不要再点刷写。",
+    officialNoFlash:"读不到 flash 芯片（Flash ID {id}）。\n跳过 stub 时 eFuse 里的引脚配置会被忽略，而当前芯片为内置 flash，用的不是默认引脚。\n请取消勾选「跳过 flasher stub」再来一次——这条路径走不通，不要再点刷写。",
     officialNoFlashStub:"读不到 flash 芯片（Flash ID {id}）。\n先拔掉、按住 BOOT 重新插入，再试一次；仍不行就是供电不足（换短 OTG 线或外接电源）。",
     officialStub:"使用 stub（若卡在 Uploading stub 请勾选“跳过 stub”）",
     officialLoading:"正在加载官方引擎…",
@@ -295,7 +295,7 @@ const I18N = {
     noWebUSB:"此浏览器不支持 WebUSB。请用 Android 上的 Chrome 或 Edge（需 HTTPS）。",
     notSecure:"页面不在安全上下文（HTTPS），WebUSB 被禁用。",
     connected:"已连接", disconnected:"设备已断开",
-    selecting:"请在弹出的选择器中挑选你的板子…", cancelled:"已取消选择",
+    selecting:"请在弹出的选择器中挑选目标板子…", cancelled:"已取消选择",
     reused:"已复用上次授权的设备（跳过选择器）",
     noDevice:"未连接设备",
     diagTitle:"— 接口诊断 —",
@@ -334,7 +334,7 @@ const I18N = {
     mNoUsbTitle:"浏览器不支持 WebUSB",
     mNoUsbBody:"WebUSB 是这个页面连接设备的前提，当前浏览器没有提供它。\n\n请用 Android 手机上的 Chrome 或 Edge 打开本页。国内常见的 UC、QQ 浏览器、微信内置浏览器大多不支持。\n\n另外注意：地址必须是 https:// 开头，且不能嵌在别人的页面里（部分在线编辑器的预览是 iframe，同样拿不到 WebUSB）。",
     mNoHttpsTitle:"页面不在 HTTPS 下",
-    mNoHttpsBody:"浏览器只在安全上下文里开放 WebUSB，当前页面不是。\n\n如果你是通过 GitHub Pages 打开的，地址应该是 https://<用户名>.github.io/<仓库名>/ —— 确认开头是 https，且没有被改成 http。",
+    mNoHttpsBody:"浏览器只在安全上下文里开放 WebUSB，当前页面不是。\n\n通过 GitHub Pages 打开时，地址应为 https://<用户名>.github.io/<仓库名>/ —— 确认开头是 https，且没有被改成 http。",
     mNoDevTitle:"没找到设备",
     mNoDevBody:"选择器里一个设备都没有。\n\n按这个顺序排查：\n\n1. 板子必须处于下载模式。正常运行 PicoKey 固件时它用的是 CCID 接口，Chrome 会屏蔽，设备直接不出现。\n\n2. 换一根确认能传数据的线，纯充电线不行。\n\n3. 确认没有被其它 App 占用（手机上的串口助手可能抢）。\n\n4. 桌面端还要注意：Chrome 会隐藏被系统驱动接管的设备（U 盘、摄像头、串口、HID 键鼠等）。",
     mWrongModeTitle:"可能不在下载模式",
@@ -352,7 +352,7 @@ const I18N = {
     secLog:"Log", secChangelog:"Changelog", changelogTitle:"Changes to this page",
     btnReload:"Force reload",
     tailVer:"Page version", tailVerHint:" (if it stays this number after reloading, Pages has not finished deploying yet - wait a few minutes)",
-    staleText:"GitHub Pages already has a newer version; you are looking at a cached copy.",
+    staleText:"GitHub Pages already has a newer version; the browser is showing a cached copy.",
     checkingUpdate:"Checking page version…",
     updateCheckFailed:"Version check failed (flashing still works)",
     btnConnect:"Select USB device", btnDiag:"Diagnose", btnListen:"Listen (raw)", btnDisconnect:"Disconnect",
@@ -360,11 +360,11 @@ const I18N = {
     secRecovery:"4. Recovery", btnErase:"Erase whole flash",
     eraseNote:"When the firmware will not start, re-flashing alone is not enough: whatever stopped it booting is still in flash, so it comes back up in the same state. Erase the whole chip first to actually clear it.\nErasing wipes the firmware, its configuration and every credential. The ESP32 ROM download mode cannot be bricked, so this is always safe to retry.",
     erasing:"Erasing the whole flash…",
-    eraseDone:"Flash erased. You can flash the firmware again now.",
+    eraseDone:"Flash erased. The firmware can be flashed again now.",
     eraseFailTitle:"Erase failed",
     eraseFailBody:"The erase did not finish.\n\nMake sure the board really is in ROM download mode (unplug, hold BOOT while plugging back in), then try again. The ROM download mode cannot be bricked, so retrying is always safe.\n\nSee the log for the exact error.",
     btnClearLog:"Clear log", btnCopyLog:"Copy log", btnModalOk:"Got it",
-    hintConnect:"Put the board into download mode, then tap the button. How you do that differs per board — check the board's own documentation.",
+    hintConnect:"Put the board into download mode, then tap the button. The gesture differs per board — check the board's own documentation.",
     reconnectTip:"If the chooser keeps coming up empty, unplug and replug, then tap again.",
     lblOffset:"Write offset (hex)",
     secMulti:"2b. Several files, each with its own offset", btnAddFile:"Add another file",
@@ -373,9 +373,9 @@ const I18N = {
     flashingFile:"Writing file {i}/{n}: {name} → {off}",
     multiDone:"All {n} files written. The board can be restarted now.",
     primaryFile:"(file picked above)", badOffset:"The offset is not a valid hex number",
-    hintOffset:"Usually 0 for PicoKeys firmware. Only change it if you know exactly why — a wrong offset bricks the flash until you re-flash (recoverable: the ROM download mode survives).",
+    hintOffset:"Usually 0 for PicoKeys firmware. Only change it when the reason is known — a wrong offset bricks the flash until the firmware is re-flashed (recoverable: the ROM download mode survives).",
     lblNoStub:"Skip the flasher stub (leave off \u2014 skipping ignores the eFuse pin config, so in-package flash disappears)",
-    hintNoStub:"Espressif's documentation states that without --spi-connection the flash pins come from eFuse,\nand the one exception is --no-stub: then the eFuse values are ignored and defaults are used.\nThis chip reports \"Embedded Flash 4MB (XMC)\", and in-package flash sits on dedicated pads rather\nthan the default pins, so skipping the stub leaves the flash unreachable (\"Flash ID: ffffff\").\nLeave this off: esptool uploads its stub, which reads eFuse and sets the pins up correctly.\nOnly tick it if you actually see it hang at \"Uploading stub\".",
+    hintNoStub:"Espressif's documentation states that without --spi-connection the flash pins come from eFuse,\nand the one exception is --no-stub: then the eFuse values are ignored and defaults are used.\nThis chip reports \"Embedded Flash 4MB (XMC)\", and in-package flash sits on dedicated pads rather\nthan the default pins, so skipping the stub leaves the flash unreachable (\"Flash ID: ffffff\").\nLeave this off: esptool uploads its stub, which reads eFuse and sets the pins up correctly.\nOnly tick it when it actually hangs at \"Uploading stub\".",
     officialNoStub:"Stub skipped, using the chip's ROM protocol",
     officialAttempt:"Connection attempt {n} failed: {msg}",
     officialRetry:"Resetting the chip and retrying ({i}/{n})\u2026",
@@ -399,7 +399,7 @@ const I18N = {
     noWebUSB:"WebUSB is not supported. Use Chrome or Edge on Android (over HTTPS).",
     notSecure:"Page is not in a secure context (HTTPS); WebUSB is disabled.",
     connected:"Connected", disconnected:"Device disconnected",
-    selecting:"Pick your board in the chooser…", cancelled:"Selection cancelled",
+    selecting:"Pick the target board in the chooser…", cancelled:"Selection cancelled",
     reused:"Reusing the previously authorised device (chooser skipped)",
     noDevice:"Not connected",
     diagTitle:"— Interface diagnostics —",
@@ -418,10 +418,10 @@ const I18N = {
     fileSize:"Size",
     sniffEsp:"Looks like an ESP image (magic 0xE9)",
     sniffUf2:"That is a UF2 — the RP2040 / RP2350 format",
-    sniffUf2Hint:"UF2 is copied onto a USB drive (in flashing mode the board becomes one); a browser cannot do that. Save the file onto the RPI-RP2 / RP2350 drive using your file manager, or use the Android app.",
+    sniffUf2Hint:"UF2 is copied onto a USB drive (in flashing mode the board becomes one); a browser cannot do that. Save the file onto the RPI-RP2 / RP2350 drive using the file manager, or use the Android app.",
     sniffZip:"That looks like a ZIP archive, not the firmware itself — extract it first.",
     sniffGzip:"That looks like a gzip archive, not the firmware itself — extract it first.",
-    sniffHtml:"That looks like a web page — you probably downloaded an error page. Re-download the real firmware.",
+    sniffHtml:"That looks like a web page — an error page was probably downloaded instead. Re-download the real firmware.",
     sniffUnknown:"Could not identify the file. Make sure this is an ESP32 firmware image.",
     flashing:"Flashing…",
     flashProgress:"Block {i} / {n}",
@@ -438,14 +438,14 @@ const I18N = {
     mNoUsbTitle:"This browser has no WebUSB",
     mNoUsbBody:"WebUSB is how this page talks to the device, and this browser does not expose it.\n\nOpen the page in Chrome or Edge on Android. Many bundled/in-app browsers (WeChat, UC, QQ) do not support it.\n\nAlso: the address must start with https://, and the page must not be embedded in someone else's - the preview pane of an online editor is an iframe, which gets no WebUSB either.",
     mNoHttpsTitle:"Page is not on HTTPS",
-    mNoHttpsBody:"Browsers only expose WebUSB in a secure context, and this page is not one.\n\nIf you are using GitHub Pages the URL should look like https://<user>.github.io/<repo>/ — check that it really starts with https and was not downgraded to http.",
+    mNoHttpsBody:"Browsers only expose WebUSB in a secure context, and this page is not one.\n\nWhen GitHub Pages is used the URL should look like https://<user>.github.io/<repo>/ — check that it really starts with https and was not downgraded to http.",
     mNoDevTitle:"No device found",
-    mNoDevBody:"The chooser came up empty.\n\nWork through these in order:\n\n1. The board must be in DOWNLOAD MODE. Running normal PicoKey firmware it uses CCID, which Chrome blocks, so the device does not appear at all.\n\n2. Use a cable you know carries data; charge-only cables do not work.\n\n3. Make sure no other app holds it (a serial terminal on the phone can grab it).\n\n4. On desktop, Chrome also hides devices already claimed by a system driver (USB drives, cameras, serial ports, HID keyboards/mice).",
+    mNoDevBody:"The chooser came up empty.\n\nWork through these in order:\n\n1. The board must be in DOWNLOAD MODE. Running normal PicoKey firmware it uses CCID, which Chrome blocks, so the device does not appear at all.\n\n2. Use a cable known to carry data; charge-only cables do not work.\n\n3. Make sure no other app holds it (a serial terminal on the phone can grab it).\n\n4. On desktop, Chrome also hides devices already claimed by a system driver (USB drives, cameras, serial ports, HID keyboards/mice).",
     mWrongModeTitle:"Probably not in download mode",
     mWrongModeBody:"Connected, but the handshake failed — the bootloader did not answer.\n\nThat usually means the board is not in download mode: it is running firmware normally (which uses CCID and could not be claimed at all), or it is running something else.\n\nPut it into download mode and try again; the method differs per board, so check the board's documentation.",
     mFlashFailTitle:"Flash failed",
     mFlashFailBody:"Something went wrong while flashing.\n\nAn ESP32 is usually recoverable: the ROM download mode cannot be erased, so re-enter download mode and flash again.\n\nSee the log for the exact error.",
-    changelogText:"2026-10-09\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when your copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· The stub is used again by default: Espressif documents that --no-stub makes\n  esptool ignore the flash pins stored in eFuse, so in-package flash is unreachable\n· Before writing, the flash ID is read; if the flash does not answer the page stops\n  immediately with the reason instead of compressing 700 KB and dying mid-write\n· Connect, sync and stub upload are retried three times with a chip reset between\n  attempts (a dropped stream needs a reset, not a replug)\n· Reset after flashing tries the watchdog reset first (USB Serial/JTAG has no RTS,\n  so hard_reset does nothing there)\n· Tapping connect twice no longer opens and claims the same device twice\n· Previously authorised devices are reused on load\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
+    changelogText:"2026-10-09\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when the local copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· The stub is used again by default: Espressif documents that --no-stub makes\n  esptool ignore the flash pins stored in eFuse, so in-package flash is unreachable\n· Before writing, the flash ID is read; if the flash does not answer the page stops\n  immediately with the reason instead of compressing 700 KB and dying mid-write\n· Connect, sync and stub upload are retried three times with a chip reset between\n  attempts (a dropped stream needs a reset, not a replug)\n· Reset after flashing tries the watchdog reset first (USB Serial/JTAG has no RTS,\n  so hard_reset does nothing there)\n· Tapping connect twice no longer opens and claims the same device twice\n· Previously authorised devices are reused on load\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
   }
 };
 
@@ -464,8 +464,7 @@ function setLang(l){
 
 /* --------------------------- cache busting ---------------------------
    Phones cache single-file pages hard, and Pages adds its own layer. Three
-   defences: the no-cache meta tags up top, a version stamp you can actually
-   read, and this explicit reload that appends a throwaway query so the
+   defences: the no-cache meta tags up top, a version stamp that is actually readable, and this explicit reload that appends a throwaway query so the
    browser cannot serve the cached copy. */
 function forceReload(){
   const base = location.href.split('#')[0].split('?')[0];
