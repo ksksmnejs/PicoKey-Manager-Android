@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import struct
 import time
 
@@ -371,6 +372,57 @@ def _check_official_engine():
                         "" if dirty else
                         "no warning that a failed stub run leaves the chip "
                         "unusable until it is replugged"))
+
+    # Espressif documents that --no-stub makes esptool ignore the flash pins
+    # kept in eFuse. Chips with in-package flash therefore lose their flash
+    # entirely (Flash ID ffffff), so skipping must be the exception, not the
+    # default.
+    default_on = re.search(r'id="chkNoStub"(?![\s\S]{0,40}?checked)', src) is not None
+    lines.append(_check("skipping the stub is NOT the default (eFuse pins are ignored)",
+                        default_on,
+                        "" if default_on else
+                        'chkNoStub is checked by default: --no-stub ignores the '
+                        'eFuse flash pins, so in-package flash is unreachable'))
+
+    # Without this, a board whose flash cannot be reached still gets 700 KB
+    # compressed and sent before the write dies, and the reason is buried.
+    # Needle is the guarded call site plus the dead-ID test, not just any
+    # mention of readFlashId: the bare name also matches the line inside the
+    # try block, so a looser needle passes even with the guard removed.
+    preflight = (has("typeof loader.readFlashId === 'function'")
+                 and has("fid === 0xFFFFFF")
+                 and has("t('officialNoFlash'")
+                 and has("t('officialNoFlashStub'"))
+    lines.append(_check("the flash is probed before anything is written",
+                        preflight,
+                        "" if preflight else
+                        "no flash-ID pre-flight: an unreachable flash is only "
+                        "discovered when the write fails"))
+
+    retry = (has("openOfficialLoader") and has("device.reset()")
+             and has("_sleep(1500)"))
+    lines.append(_check("connect + stub upload are retried with a reset between",
+                        retry,
+                        "" if retry else
+                        "a dropped stream has no retry: the whole run fails on "
+                        "the first bad packet"))
+
+    # hard_reset pulls RTS, which USB Serial/JTAG does not expose at all.
+    wd = has("loader.after('watchdog_reset')") and has("loader.after('hard_reset')")
+    lines.append(_check("reset after flashing tries the watchdog reset first",
+                        wd,
+                        "" if wd else
+                        "only hard_reset is used: there is no RTS line on "
+                        "USB Serial/JTAG, so the chip may stay in the bootloader"))
+
+    # Two open handles on one pipe eat each other's bytes.
+    reopen = re.search(r'if \(device\)\{?\s*\n?\s*log\(', src) is not None \
+        and has("await disconnect()")
+    lines.append(_check("connecting twice releases the previous handle first",
+                        reopen,
+                        "" if reopen else
+                        "connect() can open and claim the same device twice, "
+                        "which corrupts the stream"))
 
     return lines
 
