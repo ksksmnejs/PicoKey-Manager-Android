@@ -90,7 +90,7 @@ STRINGS = {
     "log_title": {"zh": "日志 / APDU", "en": "Log / APDU"},
     "log_empty": {
         "zh": "（暂无日志。日志会随连接、读取、刷写等操作自动累积。）",
-        "en": "(No log entries yet. Lines appear as you connect, read and flash.)",
+        "en": "(No log entries yet. Lines appear as the device connects, reads and flashes.)",
     },
 
     # ------------------------------------------------------------- channels
@@ -142,8 +142,8 @@ STRINGS = {
     "msg_reconnect_needed": {"zh": "请重新读取或重新连接", "en": "Re-read or reconnect"},
 
     # ---------------------------------------------------------------- errors
-    "err_no_apdu": {"zh": "这个操作需要 CCID / 智能卡通道，当前连的是 FIDO HID 通道。请回到扫描页，选 CCID（智能卡）通道连接。", "en": "This needs the CCID / smart-card channel, but you are on the FIDO HID one. Go back to the scan page and pick the CCID channel."},
-    "err_no_ctap": {"zh": "这是 FIDO HID 通道的功能（WINK、用户存在测试），当前连的是 CCID / 智能卡通道。请回到扫描页，选 FIDO HID 通道连接。", "en": "That is a FIDO HID channel feature (WINK, user presence test), but you are on the CCID one. Go back to the scan page and pick the FIDO HID channel."},
+    "err_no_apdu": {"zh": "这个操作需要 CCID / 智能卡通道，当前连的是 FIDO HID 通道。请回到扫描页，选 CCID（智能卡）通道连接。", "en": "This needs the CCID / smart-card channel, but the FIDO HID one is in use. Go back to the scan page and pick the CCID channel."},
+    "err_no_ctap": {"zh": "这是 FIDO HID 通道的功能（WINK、用户存在测试），当前连的是 CCID / 智能卡通道。请回到扫描页，选 FIDO HID 通道连接。", "en": "That is a FIDO HID channel feature (WINK, user presence test), but the CCID one is in use. Go back to the scan page and pick the FIDO HID channel."},
     "err_phy_read": {"zh": "读取 PHY 失败", "en": "Reading PHY failed"},
     "err_not_android": {"zh": "USB Host 只在安卓真机上可用（当前：{plat}）", "en": "USB host only works on a real Android device (current: {plat})"},
     "err_permission_denied": {
@@ -153,7 +153,7 @@ STRINGS = {
     "err_no_permission": {"zh": "UsbManager 仍然没有权限", "en": "UsbManager still has no permission"},
     "err_not_fido": {"zh": "这个 HID 接口不像 FIDO 设备（报告描述符里没有 usage page 0xF1D0）", "en": "This HID interface does not look like FIDO (no 0xF1D0 usage page in the report descriptor)"},
     "err_claim_failed": {"zh": "接口占用失败（多半是内核 HID 驱动占着）", "en": "Could not claim the interface (a kernel HID driver probably holds it)"},
-    "err_open_device": {"zh": "打不开设备：USB 权限没给，或设备被别的 App 占用。确认弹窗点了「允许」；若之前拒过，需卸载重装 App（或到系统设置撤销 USB 权限）后重插。", "en": "Cannot open the device: USB permission denied, or another app holds it. Make sure you tapped Allow; if you denied it earlier, reinstall the app (or revoke the USB permission in system settings) and replug."},
+    "err_open_device": {"zh": "打不开设备：USB 权限没给，或设备被别的 App 占用。确认弹窗点了「允许」；若之前拒过，需卸载重装 App（或到系统设置撤销 USB 权限）后重插。", "en": "Cannot open the device: USB permission denied, or another app holds it. Make sure Allow was tapped; if permission was denied earlier, reinstall the app (or revoke the USB permission in system settings) and replug."},
     "err_no_endpoints": {"zh": "这个接口没有可用的 IN/OUT 端点", "en": "This interface has no usable IN/OUT endpoints"},
 
     # ------------------------------------------------------------- self-test
@@ -214,7 +214,7 @@ STRINGS.update({
     "selftest_flasher_skew": {
         "zh": "flasher.py 与本次自检版本不一致（缺少「非幂等命令不重发」保护）。"
              "请上传包内的全部文件，而不是只传其中几个——只传 selftest.py 会出现这种"
-             "「你那边通过、我这边失败」的现象。",
+             "「同一份代码在不同环境结果不一致」的现象。",
         "en": "flasher.py does not match this self-test (the \"never resend a "
              "non-idempotent command\" guard is missing). Upload every file in "
              "the package, not just some of them — shipping selftest.py alone "
@@ -222,19 +222,19 @@ STRINGS.update({
     },
     "hint_channel_apdu": {
         "zh": "当前是 CCID / 智能卡通道：PHY、安全启动、重启可用。WINK 与按键测试需要 FIDO HID 通道，已置灰，请回到扫描页换通道连接。",
-        "en": "You are on the CCID / smart card channel: PHY, secure boot and reboot work here. WINK and the presence test need the FIDO HID channel and are greyed out — go back to the scan page and connect on that channel instead.",
+        "en": "The CCID / smart card channel is in use: PHY, secure boot and reboot work here. WINK and the presence test need the FIDO HID channel and are greyed out — go back to the scan page and connect on that channel instead.",
     },
     "hint_channel_ctap": {
         "zh": "当前是 FIDO HID 通道：WINK 与按键测试可用。PHY、安全启动、重启需要 CCID / 智能卡通道，已置灰，请回到扫描页换通道连接。\n\n"
              "这不是本 App 的限制：上游 PicoForge 说明，7.0/7.2 固件才有走 FIDO 的老配置通道，"
-             "7.4 及更高（包括你这块的 8.0）只能通过 rescue / PCSC 模式改硬件配置。",
-        "en": "You are on the FIDO HID channel: WINK and the presence test work here. PHY, secure boot and reboot need the CCID / smart card channel and are greyed out — go back to the scan page and connect on that channel instead.\n\n"
-             "This is not an app limitation: upstream PicoForge documents that only firmware 7.0/7.2 has the legacy FIDO-only configuration path, while 7.4 and later (including the 8.0 on your board) require rescue / PCSC mode for hardware configuration changes.",
+             "7.4 及更高（含当前设备所用的 8.0）只能通过 rescue / PCSC 模式改硬件配置。",
+        "en": "The FIDO HID channel is in use: WINK and the presence test work here. PHY, secure boot and reboot need the CCID / smart card channel and are greyed out — go back to the scan page and connect on that channel instead.\n\n"
+             "This is not an app limitation: upstream PicoForge documents that only firmware 7.0/7.2 has the legacy FIDO-only configuration path, while 7.4 and later (including the 8.0 firmware) require rescue / PCSC mode for hardware configuration changes.",
     },
     "hint_secure_unsupported": {
-        "zh": "上游 PicoForge 只标称支持到固件 7.6，你的板子是 8.0。安全启动这类命令在新固件上可能尚未开放或已变更，"
+        "zh": "上游 PicoForge 只标称支持到固件 7.6，当前设备固件为 8.0。安全启动这类命令在新固件上可能尚未开放或已变更，"
              "报 6A86/6A82 时多半是固件不接受，而不是本 App 用错了参数。",
-        "en": "Upstream PicoForge only claims support up to firmware 7.6, and your board reports 8.0. Commands such as secure boot may not be exposed yet, or may have changed, on newer builds — a 6A86/6A82 usually means the firmware refuses rather than that this app sent wrong parameters.",
+        "en": "Upstream PicoForge only claims support up to firmware 7.6, and the device reports 8.0. Commands such as secure boot may not be exposed yet, or may have changed, on newer builds — a 6A86/6A82 usually means the firmware refuses rather than that this app sent wrong parameters.",
     },
     "err_secure_write": {
         "zh": "安全启动/安全锁没有写入成功：%s\n\n这是不可逆操作（会烧写 OTP/eFuse），请确认固件确实支持该命令后再试，不要反复重试。",
@@ -307,18 +307,18 @@ STRINGS.update({
              "密钥槽：{slot}\n永久锁定：{lock}\n\n"
              "⚠️ 如果勾选了永久锁定，后果不只是「只能跑签名固件」：\n"
              "上游文档明确说明，启用安全锁会同时使除官方 Pico Key 之外的所有密钥失效——"
-             "此后只有官方签名的固件能被识别，你将无法再自己编译或刷入自定义固件。\n\n"
+             "此后只有官方签名的固件能被识别，无法再自行编译或刷入自定义固件。\n\n"
              "烧错槽位可能导致板子再也无法启动未签名固件。确认无误请输入 CONFIRM。",
         "en": "This burns the boot key into OTP/eFuse and cannot be undone.\n\n"
               "Key slot: {slot}\nLock permanently: {lock}\n\n"
-              "⚠️ If you ticked permanent lock, the consequence is larger than "
+              "⚠️ If permanent lock is ticked, the consequence is larger than "
               "\"signed firmware only\": upstream documents that enabling the "
               "secure lock also invalidates every key except the official Pico "
               "Key one. Only officially signed firmware will be recognised "
-              "afterwards, and compiling or flashing your own builds will no "
+              "afterwards, and compiling or flashing custom builds will no "
               "longer be possible.\n\n"
               "Burning the wrong slot may leave the board unable to run unsigned "
-              "firmware. Type CONFIRM if you are sure.",
+              "firmware. Type CONFIRM to proceed.",
     },
     "dlg_secure_typed_hint": {"zh": "在此输入 CONFIRM", "en": "Type CONFIRM here"},
     "dlg_secure_typed_bad": {"zh": "输入不正确，请重新输入 CONFIRM", "en": "Not accepted — type CONFIRM again"},
@@ -342,23 +342,23 @@ STRINGS.update({
     "dlg_erase_body": {
         "zh": "这会清空 flash 上的全部内容：固件、配置、以及所有已注册的密钥。\n\n"
               "擦除后板子将无法使用，直到重新刷入固件。\n\n"
-              "建议先确认你已经开启了 ROM 下载模式（拔掉，按住 BOOT 键不放再插上）。",
+              "建议先确认设备已进入 ROM 下载模式（拔掉，按住 BOOT 键不放再插上）。",
         "en": "This clears everything on the flash: the firmware, its configuration, "
               "and every credential stored on it.\n\n"
               "The board will not work again until firmware is flashed back onto it.\n\n"
-              "Make sure you are in ROM download mode first (unplug, hold BOOT "
+              "Make sure the device is in ROM download mode first (unplug, hold BOOT "
               "while plugging back in).",
     },
     "dlg_erase_go": {"zh": "确认擦除", "en": "Erase it"},
     "fw_erasing": {"zh": "正在擦除整片 flash…", "en": "Erasing the whole flash…"},
     "fw_erase_done": {
         "zh": "整片擦除完成。现在可以重新刷入固件了。",
-        "en": "Flash erased. You can flash the firmware again now.",
+        "en": "Flash erased. The firmware can be flashed again now.",
     },
 
     # Shown when a board has a serial interface but the ROM never answered.
     # Without this the scan just says "nothing found", which reads as a broken
-    # board when it actually means "you did not hold BOOT while plugging in".
+    # board when it actually means "BOOT was not held while plugging in".
     "fw_scan_not_confirmed": {
         "zh": "搜到了串口设备，但它没有回应下载握手——固件多半正在运行，"
               "不在下载模式。请拔掉，按住 BOOT 键不放再插上，然后重新扫描。",
@@ -408,7 +408,7 @@ STRINGS.update({
     # ---- 用系统文件管理器选文件（SAF）----
     "fw_pick_hint": {
         "zh": "点下面的按钮，用手机上的文件管理器选择固件文件（.uf2 或 .bin）。",
-        "en": "Tap the button below and pick the firmware file (.uf2 or .bin) with your phone's file manager.",
+        "en": "Tap the button below and pick the firmware file (.uf2 or .bin) with the phone's file manager.",
     },
     "fw_pick_failed": {
         "zh": "读取所选文件失败。",
@@ -496,7 +496,7 @@ STRINGS.update({
         "en": "Offset '{value}' for '{name}' is not a valid hex number.",
     },
     "fw_duplicate_offset": {
-        "zh": "有两个文件都写在 {offset:#x}，后者会覆盖前者。确认这是你要的吗？",
+        "zh": "有两个文件都写在 {offset:#x}，后者会覆盖前者。确认这是预期的操作吗？",
         "en": "Two files both target {offset:#x}; the later one overwrites the earlier. Is that intended?",
     },
     "fw_scan_bootloader": {"zh": "扫描处于下载模式的设备", "en": "Scan for a device in download mode"},
@@ -519,7 +519,7 @@ STRINGS.update({
     # 只提示"让板子进入刷机模式"，具体做法看板子自己的说明。
     "fw_enter_mode_hint": {
         "zh": "让板子进入刷机模式后再点扫描。不同板子进入方式不同，请参考板子的说明。",
-        "en": "Put the board into flashing mode before scanning. The gesture differs per board - check your board's documentation.",
+        "en": "Put the board into flashing mode before scanning. The gesture differs per board - check the board's documentation.",
     },
     "fw_save_hint": {
         "zh": "已打开文件管理器，把 UF2 存到板子出现的那个 U 盘里即可。",
@@ -527,7 +527,7 @@ STRINGS.update({
     },
     "fw_confirm_body": {
         "zh": "刷写会覆盖板子上的现有固件和所有已存数据。如果这是板上唯一的密钥，先确认别处有备份。确定继续吗？",
-        "en": "Flashing overwrites the current firmware and everything stored on the board. If this is your only key, make sure a backup exists elsewhere. Continue?",
+        "en": "Flashing overwrites the current firmware and everything stored on the board. If this is the only key, make sure a backup exists elsewhere. Continue?",
     },
     "fw_confirm_title": {"zh": "确认刷写？", "en": "Flash now?"},
     "fw_working": {"zh": "刷写中… {n}%", "en": "Flashing… {n}%"},

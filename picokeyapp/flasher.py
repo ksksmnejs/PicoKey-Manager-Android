@@ -449,7 +449,7 @@ class EspLoader:
 
         `reboot` chooses what FLASH_END asks the ROM to do, and the argument
         reads the opposite way to the flag: esptool sends 0 to reboot and 1 to
-        stay in the bootloader. We used to send 1 unconditionally, so a board
+        stay in the bootloader. The code used to send 1 unconditionally, so a board
         that had just been flashed sat in download mode - no LED, one USB
         interface - and looked exactly like a failed flash.
         """
