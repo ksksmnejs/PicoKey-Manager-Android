@@ -427,6 +427,61 @@ def _check_official_engine():
     return lines
 
 
+def _check_raw_listener():
+    """Checks on the read-only listener in the single-file web flasher.
+
+    "Uploading stub... Running stub... Invalid head of packet (0x45)" has two
+    causes that look identical from the tool's side: the board is rebooting in
+    a loop (Espressif documents that empty or invalid flash makes an ESP32-S3
+    reboot every few seconds, re-enumerating USB each time), or it only resets
+    once the stub is running (power). Listening without sending anything
+    separates them, so these checks guard the parts that would silently give
+    the wrong verdict.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))   # .../picokeyapp
+    root = os.path.dirname(here)                        # project root
+    path = os.path.join(root, "picokey-commissioner.html")
+    if not os.path.exists(path):
+        return ["  [skip] raw listener in the web page (source not available "
+                "in a built app)"]
+    src = io.open(path, encoding="utf-8").read()
+    lines = []
+
+    has_raw = "async function listenRaw(" in src
+    lines.append(_check(
+        "the page can listen to the board without sending anything",
+        has_raw,
+        "" if has_raw else
+        "listenRaw() is gone: a reboot loop can no longer be told apart from "
+        "a power problem"))
+
+    # A chip sitting quietly in download mode never completes transferIn, so
+    # without a race the listener hangs and the "no reboot loop" verdict,
+    # the useful half of the answer, never gets printed.
+    raced = "Promise.race([" in src and "setTimeout(() => r(null), 1200)" in src
+    lines.append(_check(
+        "the listener gives up on a silent chip instead of hanging",
+        raced,
+        "" if raced else
+        "transferIn is not raced against a timer: a quiet board hangs the page"))
+
+    bannered = "/ESP-ROM/g" in src and "listenBootLoop" in src
+    lines.append(_check(
+        "repeated boot banners are reported as a reboot loop",
+        bannered,
+        "" if bannered else
+        "no ESP-ROM banner counting: a reboot loop looks just like a healthy "
+        "board"))
+
+    gated = 'id="btnListen"' in src and "getElementById('btnListen')" in src
+    lines.append(_check(
+        "the listener is wired to a button and gated on a connection",
+        gated,
+        "" if gated else "btnListen is not wired: the diagnostic is unreachable"))
+
+    return lines
+
+
 
 def _check_channel_gating():
     """Every channel-specific button must be greyed out on the other channel."""
@@ -1617,6 +1672,7 @@ def run() -> str:
 
     lines.append("")
     lines.extend(_check_official_engine())
+    lines.extend(_check_raw_listener())
 
     lines.append("")
     if _FAILURES:
