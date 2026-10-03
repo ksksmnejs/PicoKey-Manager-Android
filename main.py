@@ -64,9 +64,12 @@ from kivy.utils import platform
 #
 # Two files are kept: the current one and the previous run's, so a crash that
 # happens on startup does not destroy the log of the run that came before it.
+_LOG_PREFIX = "picokey_"
 _LOG_FILE = "picokey.log"
 _LOG_PREV = "picokey.log.1"
 _LOG_MAX = 512 * 1024
+_LOG_KEEP = 8
+_log_name = None
 _log_lock = threading.Lock()
 _log_started = False
 
@@ -109,14 +112,29 @@ def _log_dir() -> str:
     return folder
 
 
+def _log_name_now() -> str:
+    """One dated filename per run, fixed at the first write.
+
+    A single fixed name meant every run overwrote the last, and a crash on
+    startup destroyed the log of the run before it - exactly the run that had
+    the information. Dating the file keeps them all, so "it crashed" can be
+    answered with the file that was actually being written.
+    """
+    global _log_name
+    if _log_name is None:
+        _log_name = _LOG_PREFIX + time.strftime("%Y%m%d-%H%M%S") + ".log"
+    return _log_name
+
+
 def _log_targets() -> list:
     """Every path the log is written to, most reachable first."""
     out = []
+    name = _log_name_now()
     ext = _external_dir()
     if ext:
         try:
             os.makedirs(ext, exist_ok=True)
-            out.append(os.path.join(ext, _LOG_FILE))
+            out.append(os.path.join(ext, name))
         except Exception:
             pass
     primary = _log_path()
@@ -127,19 +145,38 @@ def _log_targets() -> list:
 
 def _log_path() -> str:
     folder = _log_dir()
-    return os.path.join(folder, _LOG_FILE) if folder else ""
+    return os.path.join(folder, _log_name_now()) if folder else ""
 
 
 def _rotate_log():
-    """Start a fresh file, keeping the previous run as .1."""
-    for path in _log_targets():
+    """Old runs no longer overwrite each other, so this only prunes.
+
+    Keeping every dated log forever would fill the phone, so the most recent
+    few survive and the rest go. An old bare `picokey.log` is dropped too -
+    it belongs to the naming scheme this replaced.
+    """
+    for folder in {os.path.dirname(p) for p in _log_targets()}:
+        if not folder:
+            continue
         try:
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                prev = os.path.join(os.path.dirname(path), _LOG_PREV)
-                if os.path.exists(prev):
-                    os.remove(prev)
-                os.replace(path, prev)
-        except Exception:
+            names = [n for n in os.listdir(folder)
+                     if n.startswith(_LOG_PREFIX) and n.endswith(".log")]
+            names.sort(reverse=True)
+            for old in names[_LOG_KEEP:]:
+                try:
+                    os.remove(os.path.join(folder, old))
+                except OSError:
+                    pass
+            # The undated name from the previous scheme: delete it, or it sits
+            # next to the dated ones looking like the current log when it is
+            # really a stale file an older build wrote.
+            for old in (n for n in os.listdir(folder)
+                        if n in (_LOG_FILE, _LOG_PREV)):
+                try:
+                    os.remove(os.path.join(folder, old))
+                except OSError:
+                    pass
+        except OSError:
             pass
 
 
@@ -1634,6 +1671,10 @@ class PicoKeyApp(App):
         erase_first = self._fw_erase_first()
         if erase_first:
             self.log("fw_flash: erasing the whole chip first")
+            # The chip says nothing at all while it erases, so a long silence
+            # here is normal. Without this the app looks frozen at the exact
+            # moment it is waiting longest.
+            self.log("fw_flash: no output while erasing; waits up to 90s")
         # Two images at the same address means one silently overwrites the
         # other, which reads as "it flashed fine but the board is still dead".
         seen = {}
