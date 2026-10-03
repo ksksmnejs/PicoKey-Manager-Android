@@ -128,6 +128,7 @@
   <div class="row">
     <button class="primary" id="btnConnect" onclick="connect()" data-i18n="btnConnect">选择 USB 设备</button>
     <button id="btnDiag" onclick="diagnose()" disabled data-i18n="btnDiag">诊断接口</button>
+    <button id="btnListen" onclick="listenRaw()" disabled data-i18n="btnListen">监听原始输出</button>
     <button id="btnDisconnect" onclick="disconnect()" disabled data-i18n="btnDisconnect">断开</button>
   </div>
   <div id="devInfo" class="hidden"></div>
@@ -234,7 +235,7 @@
 /* Bump this every time the file changes. It is printed at the bottom of the
    page so you can tell at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
-const PAGE_VERSION = 'r10';
+const PAGE_VERSION = 'r11';
 
 let LANG = 'zh';
 const I18N = {
@@ -249,7 +250,7 @@ const I18N = {
     staleText:"GitHub Pages 上已经是更新的版本了，你现在看到的是缓存里的旧页面。",
     checkingUpdate:"正在检查页面版本…",
     updateCheckFailed:"版本检查没能完成（不影响刷写功能）",
-    btnConnect:"选择 USB 设备", btnDiag:"诊断接口", btnDisconnect:"断开",
+    btnConnect:"选择 USB 设备", btnDiag:"诊断接口", btnListen:"监听原始输出", btnDisconnect:"断开",
     btnPickFile:"点击选择固件文件", btnFlash:"刷入（会覆盖现有固件）",
     secRecovery:"4. 恢复", btnErase:"整片擦除",
     eraseNote:"固件起不来时，只重刷是不够的——让它起不来的那份配置仍然留在 flash 里，刷完还是同样的状态。先整片擦除才能真正清干净。\n擦除会清空固件、配置和所有已注册的密钥。ESP32 的 ROM 下载模式烧不掉，这一步随时可以重试。",
@@ -301,6 +302,11 @@ const I18N = {
     intfLine:"接口 #{n}: class=0x{c} sub=0x{s} proto=0x{p}",
     epLine:"  端点 0x{a} dir={d} type={t}",
     blockedLine:"  （受保护类别，浏览器不允许接管）",
+    listenTitle:"— 原始输出监听 —",
+    listenBootLoop:"⚠️ 出现 {n} 次启动横幅 —— 板子在反复重启（每几秒一次）",
+    listenQuiet:"监听 {s} 秒没有任何字节 —— 芯片安静停在下载模式，没有重启循环",
+    listenGot:"收到 {n} 字节：{txt}",
+    listenReconnect:"监听会留下未完成的读取，刷写前请先断开重连。",
     willUse:"将使用接口 #{n} (class=0x{c})",
     noUsableIntf:"没找到可用的 bulk 端点接口",
     noFile:"请先选择固件文件",
@@ -349,7 +355,7 @@ const I18N = {
     staleText:"GitHub Pages already has a newer version; you are looking at a cached copy.",
     checkingUpdate:"Checking page version…",
     updateCheckFailed:"Version check failed (flashing still works)",
-    btnConnect:"Select USB device", btnDiag:"Diagnose", btnDisconnect:"Disconnect",
+    btnConnect:"Select USB device", btnDiag:"Diagnose", btnListen:"Listen (raw)", btnDisconnect:"Disconnect",
     btnPickFile:"Tap to pick a firmware file", btnFlash:"Flash (overwrites current firmware)",
     secRecovery:"4. Recovery", btnErase:"Erase whole flash",
     eraseNote:"When the firmware will not start, re-flashing alone is not enough: whatever stopped it booting is still in flash, so it comes back up in the same state. Erase the whole chip first to actually clear it.\nErasing wipes the firmware, its configuration and every credential. The ESP32 ROM download mode cannot be bricked, so this is always safe to retry.",
@@ -400,6 +406,11 @@ const I18N = {
     intfLine:"Interface #{n}: class=0x{c} sub=0x{s} proto=0x{p}",
     epLine:"  endpoint 0x{a} dir={d} type={t}",
     blockedLine:"  (protected class — the browser refuses to claim it)",
+    listenTitle:"— Raw output listener —",
+    listenBootLoop:"⚠️ {n} boot banners seen — the board reboots every few seconds",
+    listenQuiet:"No bytes in {s}s — the chip sits quietly in download mode, no reboot loop",
+    listenGot:"Got {n} bytes: {txt}",
+    listenReconnect:"Listening leaves a pending read; disconnect and reconnect before flashing.",
     willUse:"Will use interface #{n} (class=0x{c})",
     noUsableIntf:"No interface with usable bulk endpoints",
     noFile:"Pick a firmware file first",
@@ -649,6 +660,7 @@ async function connect(){
     '<div class="kv"><span>VID:PID</span><span>'+hex(device.vendorId,4)+':'+hex(device.productId,4)+'</span></div>'+
     '<div class="kv"><span>'+t('connected')+'</span><span>'+(device.productName||'?')+'</span></div>';
   document.getElementById('btnDiag').disabled = false;
+  document.getElementById('btnListen').disabled = false;
   document.getElementById('btnDisconnect').disabled = false;
   updateFlashGate();
 }
@@ -669,6 +681,53 @@ function diagnose(){
   }
 }
 
+/* Reads whatever the board volunteers, without sending anything.
+
+   This is the one test that separates the two candidate causes of
+   "Uploading stub... Running stub... Invalid head of packet (0x45)":
+   a chip that keeps printing its ROM banner is rebooting (Espressif
+   documents that empty or invalid flash makes an ESP32-S3 reboot every
+   few seconds, re-enumerating USB each time), while a quiet chip means
+   the reboot happens only under load, which points at power. */
+async function listenRaw(seconds){
+  if (!device){ log(t('noDevice'),'warn'); return; }
+  seconds = seconds || 5;
+  log(t('listenTitle'),'dim');
+  const deadline = Date.now() + seconds*1000;
+  const got = [];
+  while (Date.now() < deadline){
+    let chunk = null;
+    try {
+      chunk = await Promise.race([
+        device.transferIn(epIn, 64),
+        new Promise(r => setTimeout(() => r(null), 1200))
+      ]);
+    } catch(e){ break; }
+    if (!chunk) break;                       // nothing arrived: chip is quiet
+    const b = new Uint8Array(chunk.data.buffer || chunk.data);
+    if (b.length) got.push(b);
+  }
+  const all = new Uint8Array(got.reduce((n,b)=>n+b.length,0));
+  let off = 0; for (const b of got){ all.set(b, off); off += b.length; }
+
+  if (!all.length){
+    log(t('listenQuiet',{s:seconds}), 'ok');
+    log(t('listenReconnect'), 'dim');
+    return;
+  }
+  let txt = '';
+  for (const b of all) txt += (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '.';
+  const banners = (txt.match(/ESP-ROM/g) || []).length;
+  log(t('listenGot',{n:all.length, txt: txt.slice(0,200)}), 'dim');
+  if (banners >= 2){
+    log(t('listenBootLoop',{n:banners}), 'err');
+  } else if (banners === 1){
+    log(LANG==='zh' ? 'ℹ️ 只看到一次启动横幅 —— 这是上电时正常打印的那一次。'
+                    : 'ℹ️ One boot banner only — that is the normal one printed at power-up.', 'dim');
+  }
+  log(t('listenReconnect'), 'dim');
+}
+
 async function disconnect(){
   if (device){
     try { if (ifaceNum!=null) await device.releaseInterface(ifaceNum); } catch(e){}
@@ -680,6 +739,7 @@ function resetUi(){
   device=null; epIn=epOut=ifaceNum=null;
   document.getElementById('devInfo').classList.add('hidden');
   document.getElementById('btnDiag').disabled = true;
+  document.getElementById('btnListen').disabled = true;
   document.getElementById('btnDisconnect').disabled = true;
   updateFlashGate();
 }
