@@ -483,6 +483,98 @@ def _check_raw_listener():
 
 
 
+def _check_no_hang_no_false_alarm():
+    """Three bugs that all present as "it just sits there" or "it lies".
+
+    A board in a reboot loop prints its ROM banner forever. Every banner
+    arrived before the per-frame deadline expired, which reset the deadline,
+    so an erase that could never be answered waited forever: the app hangs on
+    "erasing the whole chip" with no error and no way out.
+
+    Separately, the module check looked for .py files next to __file__. In a
+    packaged APK there are none, so it reported all eleven modules missing on
+    a build that was plainly running - the app cannot import them and be
+    broken at the same time.
+
+    And a single fixed log name meant each run overwrote the last, so a crash
+    on startup destroyed the log of the run before it.
+    """
+    import re as _re
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)
+    lines = []
+
+    try:
+        with open(os.path.join(here, "flasher.py"), encoding="utf-8") as fh:
+            fsrc = fh.read()
+    except OSError:
+        return ["  [skip] erase/import/log guards (source not available "
+                "in a built app)"]
+
+    # One wall-clock budget, shared: the loop must consult remaining time
+    # rather than handing each _read_frame the full timeout again.
+    budget = ("budget = _now() + (timeout or self.timeout) / 1000.0" in fsrc
+              and "remaining = budget - _now()" in fsrc
+              and "self._read_frame(timeout=max(1, int(remaining * 1000)))" in fsrc)
+    lines.append(_check(
+        "an endless banner cannot extend the erase wait",
+        budget,
+        "" if budget else
+        "_await_op re-arms a full timeout per frame: a rebooting board hangs "
+        "the flash instead of failing"))
+
+    try:
+        with open(os.path.join(root, "main.py"), encoding="utf-8") as fh:
+            msrc = fh.read()
+    except OSError:
+        msrc = ""
+    if not msrc:
+        lines.append("  [skip] log naming (source not available in a built app)")
+        return lines
+
+    dated = ('_LOG_PREFIX = "picokey_"' in msrc
+             and '_log_name = _LOG_PREFIX + time.strftime("%Y%m%d-%H%M%S")' in msrc)
+    lines.append(_check(
+        "each run gets its own dated log file",
+        dated,
+        "" if dated else
+        "the log name is fixed again: a crash on open destroys the previous "
+        "run's log"))
+
+    # The prefix already owns one underscore, so a second one glues three
+    # fields into "picokey_20261003_091636" and the stamp stops being
+    # readable at a glance. A dash keeps date and time visibly separate.
+    stamp = re.search(r'_LOG_PREFIX \+ time\.strftime\("([^"]+)"\)', msrc)
+    glued = bool(stamp) and "_%H" in stamp.group(1)
+    lines.append(_check(
+        "date and time are separated by a dash, not an underscore",
+        bool(stamp) and not glued,
+        "" if (bool(stamp) and not glued) else
+        "the stamp glues three fields together: picokey_20261003_091636.log"))
+
+    # The false alarm: importing is the only honest test for a packaged build.
+    # This check lives in the same file as the code it guards, so it reads
+    # itself - a guard that inspects the wrong file passes no matter what.
+    try:
+        with open(os.path.abspath(__file__), encoding="utf-8") as fh:
+            ssrc = fh.read()
+    except OSError:
+        ssrc = ""
+    # Both needles appear in this very check, so a plain `in` test would be
+    # satisfied by the guard itself and could never fail. Counting is what
+    # makes it meaningful: one hit is the guard, two mean real code.
+    imported = ssrc.count('__import__("picokeyapp." + m)') >= 2
+    stale = ssrc.count('os.path.exists(os.path.join(here, m + ".py"))') > 1
+    lines.append(_check(
+        "module completeness is decided by importing, not by file lookup",
+        imported and not stale,
+        "" if imported and not stale else
+        "the check looks for .py files, which do not exist in an APK - it "
+        "reports every module missing on a build that runs fine"))
+
+    return lines
+
+
 def _check_channel_gating():
     """Every channel-specific button must be greyed out on the other channel."""
     import os
@@ -761,11 +853,20 @@ def run() -> str:
     # Module completeness, before anything is imported from this package: a
     # missing file is the most common cause of "it crashes on open", and every
     # check below is pointless until the imports resolve.
+    # Imported, not looked up on disk. In a packaged APK the sources are not
+    # loose .py files next to __file__, so a file-existence check reports every
+    # single module as missing while the app itself is plainly running - the
+    # user then sees "missing modules" for a build that imports fine. Only an
+    # import that actually raises is a missing module.
     here = os.path.dirname(os.path.abspath(__file__))
     _MAIN_IMPORTS = ["cbor_mini", "ccid", "ctap", "ctapcfg", "detect",
                      "flasher", "fonts", "i18n", "usbhost", "uvcrypto", "saf"]
-    gone = [m for m in _MAIN_IMPORTS
-            if not os.path.exists(os.path.join(here, m + ".py"))]
+    gone = []
+    for m in _MAIN_IMPORTS:
+        try:
+            __import__("picokeyapp." + m)
+        except Exception:
+            gone.append(m)
     if gone:
         return "\n".join([
             t("selftest_title"), "",
@@ -1673,6 +1774,7 @@ def run() -> str:
     lines.append("")
     lines.extend(_check_official_engine())
     lines.extend(_check_raw_listener())
+    lines.extend(_check_no_hang_no_false_alarm())
 
     lines.append("")
     if _FAILURES:

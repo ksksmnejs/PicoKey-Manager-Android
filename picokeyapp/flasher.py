@@ -408,10 +408,22 @@ class EspLoader:
         the operation right there, with the board erasing anyway and the app
         reporting failure. For a command that must not go out twice, dropping
         those frames and carrying on is the only correct answer.
+
+        The wait is bounded by one wall-clock budget shared by every frame, not
+        by a fresh timeout per frame. A board stuck in a reboot loop prints its
+        ROM banner every few seconds forever; with a per-frame timeout each of
+        those banners arrived before the deadline and reset it, so an erase
+        that could never be answered waited forever instead of failing. That
+        is what "it hangs at erasing" actually was.
         """
+        budget = _now() + (timeout or self.timeout) / 1000.0
         stale = 0
         while True:
-            resp = self._read_frame(timeout=timeout)
+            remaining = budget - _now()
+            if remaining <= 0:
+                raise FirmwareError(t("fw_esp_timeout",
+                                      default="no response from the bootloader"))
+            resp = self._read_frame(timeout=max(1, int(remaining * 1000)))
             if len(resp) >= 8 and resp[0] == 0x01 and resp[1] == op:
                 return resp
             stale += 1
