@@ -297,6 +297,7 @@ const I18N = {
     connected:"已连接", disconnected:"设备已断开",
     selecting:"请在弹出的选择器中挑选目标板子…", cancelled:"已取消选择",
     reused:"已复用上次授权的设备（跳过选择器）",
+    reloadHint:"刷新后需要重新点「选择 USB 设备」——WebUSB 连接不会跨刷新保留。",
     noDevice:"未连接设备",
     diagTitle:"— 接口诊断 —",
     intfLine:"接口 #{n}: class=0x{c} sub=0x{s} proto=0x{p}",
@@ -401,6 +402,7 @@ const I18N = {
     connected:"Connected", disconnected:"Device disconnected",
     selecting:"Pick the target board in the chooser…", cancelled:"Selection cancelled",
     reused:"Reusing the previously authorised device (chooser skipped)",
+    reloadHint:"Reloading clears the connection: pick the USB device again — WebUSB does not survive a reload.",
     noDevice:"Not connected",
     diagTitle:"— Interface diagnostics —",
     intfLine:"Interface #{n}: class=0x{c} sub=0x{s} proto=0x{p}",
@@ -445,7 +447,7 @@ const I18N = {
     mWrongModeBody:"Connected, but the handshake failed — the bootloader did not answer.\n\nThat usually means the board is not in download mode: it is running firmware normally (which uses CCID and could not be claimed at all), or it is running something else.\n\nPut it into download mode and try again; the method differs per board, so check the board's documentation.",
     mFlashFailTitle:"Flash failed",
     mFlashFailBody:"Something went wrong while flashing.\n\nAn ESP32 is usually recoverable: the ROM download mode cannot be erased, so re-enter download mode and flash again.\n\nSee the log for the exact error.",
-    changelogText:"2026-10-03\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when the local copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· The stub is used again by default: Espressif documents that --no-stub makes\n  esptool ignore the flash pins stored in eFuse, so in-package flash is unreachable\n· Before writing, the flash ID is read; if the flash does not answer the page stops\n  immediately with the reason instead of compressing 700 KB and dying mid-write\n· Connect, sync and stub upload are retried three times with a chip reset between\n  attempts (a dropped stream needs a reset, not a replug)\n· Reset after flashing tries the watchdog reset first (USB Serial/JTAG has no RTS,\n  so hard_reset does nothing there)\n· Tapping connect twice no longer opens and claims the same device twice\n· Previously authorised devices are reused on load\n· Added a "listen to raw output" diagnostic: it sends nothing and reads for 5 s;\n  repeated boot banners mean the board is in a reboot loop\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
+    changelogText:"2026-10-03\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when the local copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· The stub is used again by default: Espressif documents that --no-stub makes\n  esptool ignore the flash pins stored in eFuse, so in-package flash is unreachable\n· Before writing, the flash ID is read; if the flash does not answer the page stops\n  immediately with the reason instead of compressing 700 KB and dying mid-write\n· Connect, sync and stub upload are retried three times with a chip reset between\n  attempts (a dropped stream needs a reset, not a replug)\n· Reset after flashing tries the watchdog reset first (USB Serial/JTAG has no RTS,\n  so hard_reset does nothing there)\n· Tapping connect twice no longer opens and claims the same device twice\n· Previously authorised devices are reused on load\n· Added a 'listen to raw output' diagnostic: it sends nothing and reads for 5 s;\n  repeated boot banners mean the board is in a reboot loop\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
   }
 };
 
@@ -468,7 +470,17 @@ function setLang(l){
    browser cannot serve the cached copy. */
 function forceReload(){
   const base = location.href.split('#')[0].split('?')[0];
+  try { sessionStorage.setItem('pkReloaded','1'); } catch(e){}
   location.replace(base + '?v=' + Date.now());
+}
+// A reload drops the USBDevice object, so every button except "connect" goes
+// grey. Without a word about it that looks like the page broke.
+function noteReload(){
+  try {
+    if (sessionStorage.getItem('pkReloaded') !== '1') return;
+    sessionStorage.removeItem('pkReloaded');
+    log(t('reloadHint'), 'dim');
+  } catch(e){}
 }
 async function checkForUpdate(){
   const stamp = document.getElementById('verStamp');
@@ -1367,6 +1379,7 @@ async function doErase(){
 /* --------------------------- boot --------------------------- */
 setLang('zh');
 updateFlashGate();
+noteReload();
 checkForUpdate();
 
 // Belt and braces: the modal must start hidden even if the stylesheet fails
