@@ -482,6 +482,124 @@ def _check_raw_listener():
     return lines
 
 
+def _dict_line_closed(line):
+    """True if every `"key":"value"` pair on one dictionary line is intact.
+
+    Walks the line instead of using one greedy match, because several keys
+    share a line. A value that ends early (an unescaped quote inside it)
+    leaves the closing quote followed by prose rather than a comma or the
+    end of the line, which is exactly what the browser chokes on.
+    """
+    i, n = 0, len(line)
+    while True:
+        j = line.find(':"', i)
+        if j < 0:
+            return True
+        k = j + 2
+        while k < n:
+            if line[k] == "\\":
+                k += 2
+                continue
+            if line[k] == '"':
+                break
+            k += 1
+        if k >= n:
+            return False                      # value never closed
+        m = k + 1
+        while m < n and line[m] in " \t":
+            m += 1
+        if m >= n:
+            return True
+        if line[m] != ",":
+            return False                      # prose where a comma belongs
+        i = m + 1
+
+
+def _check_dict_quotes():
+    """Checks that no dictionary string carries an unescaped double quote.
+
+    Every string in the translation dictionaries is delimited by `"`. One
+    stray quote inside a value ends the string early and turns the whole
+    inline script into a syntax error, which kills the page: the markup still
+    renders, so it looks fine, but every button is dead. This is easy to do
+    when writing English prose with quoted terms, and a browser is the only
+    way to notice it otherwise.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))   # .../picokeyapp
+    root = os.path.dirname(here)                        # project root
+    path = os.path.join(root, "picokey-commissioner.html")
+    if not os.path.exists(path):
+        return ["  [skip] quote check in the web page (source not available "
+                "in a built app)"]
+    src = io.open(path, encoding="utf-8").read()
+    lines_src = src.split("\n")
+    # 0-based slices for the two dictionary literals found by markers.
+    starts = [i for i, ln in enumerate(lines_src) if ln.strip() in ("zh: {", "en: {")]
+    bad = []
+    for s in starts:
+        for ln in lines_src[s + 1:]:
+            if ln.rstrip() in ("};", "  };"):
+                break
+            if not _dict_line_closed(ln):
+                bad.append(ln.strip()[:60])
+    lines = []
+    lines.append(_check(
+        "no dictionary string breaks out of its quotes",
+        not bad,
+        "" if not bad else
+        "unescaped \" in: " + "; ".join(bad[:3]) +
+        " — the inline script will not parse and every button goes dead"))
+    return lines
+
+
+def _check_reload_note():
+    """Checks the hint shown after a forced reload.
+
+    Reloading drops the USBDevice object, so the page comes back with every
+    button grey except "connect". That is correct, but it reads as a broken
+    page, which sends people hunting for a bug that is not there.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))   # .../picokeyapp
+    root = os.path.dirname(here)                        # project root
+    path = os.path.join(root, "picokey-commissioner.html")
+    if not os.path.exists(path):
+        return ["  [skip] reload hint in the web page (source not available "
+                "in a built app)"]
+    src = io.open(path, encoding="utf-8").read()
+    lines = []
+
+    # The hint has to survive the reload it is describing, hence sessionStorage
+    # rather than a plain variable.
+    flagged = "sessionStorage.setItem('pkReloaded','1')" in src
+    lines.append(_check(
+        "a reload leaves a marker the next page load can see",
+        flagged,
+        "" if flagged else
+        "forceReload() sets no marker: the hint can never be shown"))
+
+    # Anchored: a substring match also hits the commented-out copy and the
+    # definition, so a disabled call would still read as wired.
+    shown = ("function noteReload()" in src
+             and re.search(r"^\s*noteReload\(\);", src, re.M) is not None)
+    lines.append(_check(
+        "the reload hint is actually called at startup",
+        shown,
+        "" if shown else
+        "noteReload() is never called: a reload still looks like a failure"))
+
+    # Both dictionaries, otherwise the English page logs an empty line.
+    zh = 'reloadHint:"刷新后需要重新点' in src
+    en = 'reloadHint:"Reloading clears the connection' in src
+    lines.append(_check(
+        "the reload hint is translated in both languages",
+        zh and en,
+        "" if (zh and en) else
+        "reloadHint is missing from %s dictionary"
+        % ("the English" if zh else ("the Chinese" if en else "each"))))
+
+    return lines
+
+
 
 def _check_no_hang_no_false_alarm():
     """Three bugs that all present as "it just sits there" or "it lies".
@@ -1774,6 +1892,8 @@ def run() -> str:
     lines.append("")
     lines.extend(_check_official_engine())
     lines.extend(_check_raw_listener())
+    lines.extend(_check_reload_note())
+    lines.extend(_check_dict_quotes())
     lines.extend(_check_no_hang_no_false_alarm())
 
     lines.append("")
