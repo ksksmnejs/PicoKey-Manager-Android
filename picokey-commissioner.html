@@ -171,7 +171,9 @@
   <div class="sub" data-i18n="hintNoStub"></div>
   <div class="row" style="margin-top:10px">
     <button class="danger" id="btnFlash" onclick="doFlash()" disabled data-i18n="btnFlash">刷入（会覆盖现有固件）</button>
+    <button class="primary" id="btnUf2" onclick="doWriteUf2()" disabled data-i18n="btnUf2">直接写入 UF2（RP2040/RP2350）</button>
   </div>
+  <div class="sub" data-i18n="hintUf2" style="margin-top:6px"></div>
   <div id="bar" class="hidden"><div id="barInner"></div></div>
   <div class="sub" id="progText" style="margin-top:6px"></div>
   <div class="banner warn" data-i18n="flashWarn" style="margin-top:10px"></div>
@@ -235,7 +237,7 @@
 /* Bump this every time the file changes. It is printed at the bottom of the
    page so it is obvious at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
-const PAGE_VERSION = 'r11';
+const PAGE_VERSION = 'r12';
 
 let LANG = 'zh';
 const I18N = {
@@ -315,7 +317,21 @@ const I18N = {
     fileSize:"大小",
     sniffEsp:"识别为 ESP 镜像（magic 0xE9）",
     sniffUf2:"识别为 UF2 —— 这是 RP2040 / RP2350 的格式",
-    sniffUf2Hint:"UF2 要通过 U 盘拷贝（刷机模式下板子会变成一个 U 盘），浏览器做不到。请把这个文件用系统文件管理器存到 RPI-RP2 / RP2350 盘里，或改用安卓 App。",
+    sniffUf2Hint:"UF2 不需要填偏移，一个文件就是完整镜像。点下面的「直接写入 UF2」，本页会走 USB 大容量存储协议写入，不依赖手机挂载那个小盘。\n注意：Chrome 把大容量存储列为受保护接口，可能会直接拒绝；被拒时请用安卓 App。",
+    btnUf2:"直接写入 UF2（RP2040/RP2350）",
+    hintUf2:"走 USB 大容量存储协议（Bulk-Only Transport）写入，不需要手机挂载 U 盘、不需要储存权限。若浏览器拒绝接管接口，说明它把大容量存储当受保护接口屏蔽了，改用安卓 App 即可。",
+    uf2NeedFile:"请先选择一个 UF2 文件。",
+    uf2NoMsc:"没找到大容量存储接口 —— 板子可能不在 BOOTSEL 模式。",
+    uf2NoMscBody:"已连接，但这个设备上没有大容量存储接口。\n\nRP2040 / RP2350 只有在 BOOTSEL 模式下才会变成 U 盘：拔掉，按住 BOOT 不放再插上，然后松开，重新连接一次。",
+    uf2Using:"使用大容量存储接口 {n}",
+    uf2Blocked:"浏览器拒绝接管大容量存储接口",
+    uf2BlockedBody:"Chrome 把 USB 大容量存储（接口类 0x08）列为受保护接口，可能直接拒绝接管，本页无法绕过。\n\n请改用安卓 App —— 它走安卓的 USB Host API，不受这条限制。",
+    uf2Writing:"正在写入 {n} 个块…",
+    uf2LastNoReply:"最后一块没有回执（板子已重启，属正常）",
+    uf2Done:"UF2 写入完成",
+    uf2DoneBody:"UF2 已写入，板子会自动重启。\n若 LED 开始闪动、且能枚举出 FIDO 通道，即表示成功。",
+    uf2Failed:"写入 UF2 失败",
+    mUf2Title:"写入 UF2",
     sniffZip:"这看起来是 ZIP 压缩包，不是固件本体，请先解压。",
     sniffGzip:"这看起来是 gzip 压缩包，不是固件本体，请先解压。",
     sniffHtml:"这看起来是网页文件 —— 大概是下载时拿到了错误页面，请重新下载真正的固件。",
@@ -343,7 +359,7 @@ const I18N = {
     mFlashFailTitle:"刷写失败",
     mFlashFailBody:"刷写过程中出错。\n\nESP32 通常可以救回：ROM 下载模式烧不掉，重新进入下载模式再刷一次即可。\n\n详情看日志里的具体报错。",
     // 页面内更新日志
-    changelogText:"2026-10-03\n· 支持一次选多个文件并各自填偏移（ESP32-S3 需要 bootloader / 分区表 / 主程序 三个）\n· 本页改为 ESP32-S2 / S3 固件刷写工具\n· 实现 esptool ROM 协议（SLIP 组帧 + FLASH_BEGIN/DATA/END），不上传 flasher stub\n· 顶部如实说明：Chrome 屏蔽 CCID，本页无法配置运行中的设备\n· 移除「安全启动 / 安全锁」整节（浏览器做不到，留着只是误导）\n· 选文件不再限定 .bin，按内容识别格式\n· 浏览器不支持 WebUSB / 非 HTTPS 时恢复启动弹窗（之前只写进日志，容易滑过去就看不到）\n· 加禁止缓存的 meta、页面版本戳（r6）、「强制刷新」按钮，并自动比对 Pages 上的版本，\n  检测到旧页面时顶部提示\n· 选择设备失败时弹出排查指引，不再只显示“已取消”\n· 启动时自动复用上次已授权的设备\n· 新增「监听原始输出」诊断：不发任何指令，纯读 5 秒；\n  重复出现 ROM banner 即判定为板子在反复重启\n\n更早\n· 原为 CCID 配置工具（因浏览器屏蔽 CCID 而无法工作）\n· 增加中英双语切换",
+    changelogText:"2026-10-04\n\u00b7 新增「直接写入 UF2」：RP2040 / RP2350 在 BOOTSEL 模式下就是 USB 大容量存储设备，\n  本页改用 Bulk-Only Transport 直接写入，不再依赖手机挂载那个小盘\n\u00b7 选到 UF2 时不再提示「浏览器做不到」\n\u00b7 浏览器若把大容量存储（接口类 0x08）当受保护接口拒绝接管，会明确说明并建议改用安卓 App\n\u00b7 写完最后一块后板子立即重启、不再回执，这种情况按成功处理\n\n2026-10-03\n· 支持一次选多个文件并各自填偏移（ESP32-S3 需要 bootloader / 分区表 / 主程序 三个）\n· 本页改为 ESP32-S2 / S3 固件刷写工具\n· 实现 esptool ROM 协议（SLIP 组帧 + FLASH_BEGIN/DATA/END），不上传 flasher stub\n· 顶部如实说明：Chrome 屏蔽 CCID，本页无法配置运行中的设备\n· 移除「安全启动 / 安全锁」整节（浏览器做不到，留着只是误导）\n· 选文件不再限定 .bin，按内容识别格式\n· 浏览器不支持 WebUSB / 非 HTTPS 时恢复启动弹窗（之前只写进日志，容易滑过去就看不到）\n· 加禁止缓存的 meta、页面版本戳（r6）、「强制刷新」按钮，并自动比对 Pages 上的版本，\n  检测到旧页面时顶部提示\n· 选择设备失败时弹出排查指引，不再只显示“已取消”\n· 启动时自动复用上次已授权的设备\n· 新增「监听原始输出」诊断：不发任何指令，纯读 5 秒；\n  重复出现 ROM banner 即判定为板子在反复重启\n\n更早\n· 原为 CCID 配置工具（因浏览器屏蔽 CCID 而无法工作）\n· 增加中英双语切换",
   },
   en: {
     title:"PicoKey Web Flasher", subtitle:"Flash ESP32-S2 / S3 firmware over WebUSB · no app · no compiling",
@@ -420,7 +436,21 @@ const I18N = {
     fileSize:"Size",
     sniffEsp:"Looks like an ESP image (magic 0xE9)",
     sniffUf2:"That is a UF2 — the RP2040 / RP2350 format",
-    sniffUf2Hint:"UF2 is copied onto a USB drive (in flashing mode the board becomes one); a browser cannot do that. Save the file onto the RPI-RP2 / RP2350 drive using the file manager, or use the Android app.",
+    sniffUf2Hint:"A UF2 needs no offset: one file is the whole image. Tap \u201cWrite UF2\u201d below and this page writes it over the USB mass-storage protocol, without the phone having to mount that little drive.\nNote: Chrome classes mass storage as a protected interface and may refuse it outright; if so, use the Android app.",
+    btnUf2:"Write UF2 (RP2040/RP2350)",
+    hintUf2:"Writes over the USB mass-storage protocol (Bulk-Only Transport): no drive mounting and no storage permission needed. If the browser refuses to take the interface, it treats mass storage as a protected class \u2014 use the Android app instead.",
+    uf2NeedFile:"Pick a UF2 file first.",
+    uf2NoMsc:"No mass-storage interface found — the board may not be in BOOTSEL mode.",
+    uf2NoMscBody:"Connected, but this device has no mass-storage interface.\n\nAn RP2040 / RP2350 only becomes a drive in BOOTSEL mode: unplug it, hold BOOT while plugging it back in, release, then connect again.",
+    uf2Using:"Using mass-storage interface {n}",
+    uf2Blocked:"The browser refused to take the mass-storage interface",
+    uf2BlockedBody:"Chrome treats USB mass storage (interface class 0x08) as a protected interface and may refuse it outright; this page cannot work around that.\n\nUse the Android app instead \u2014 it goes through the Android USB Host API, which has no such restriction.",
+    uf2Writing:"Writing {n} blocks…",
+    uf2LastNoReply:"No reply to the last block (the board already rebooted — expected)",
+    uf2Done:"UF2 written",
+    uf2DoneBody:"The UF2 has been written and the board reboots on its own.\nIf the LED starts blinking and a FIDO interface appears, it worked.",
+    uf2Failed:"Writing the UF2 failed",
+    mUf2Title:"Write UF2",
     sniffZip:"That looks like a ZIP archive, not the firmware itself — extract it first.",
     sniffGzip:"That looks like a gzip archive, not the firmware itself — extract it first.",
     sniffHtml:"That looks like a web page — an error page was probably downloaded instead. Re-download the real firmware.",
@@ -447,7 +477,7 @@ const I18N = {
     mWrongModeBody:"Connected, but the handshake failed — the bootloader did not answer.\n\nThat usually means the board is not in download mode: it is running firmware normally (which uses CCID and could not be claimed at all), or it is running something else.\n\nPut it into download mode and try again; the method differs per board, so check the board's documentation.",
     mFlashFailTitle:"Flash failed",
     mFlashFailBody:"Something went wrong while flashing.\n\nAn ESP32 is usually recoverable: the ROM download mode cannot be erased, so re-enter download mode and flash again.\n\nSee the log for the exact error.",
-    changelogText:"2026-10-03\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when the local copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· The stub is used again by default: Espressif documents that --no-stub makes\n  esptool ignore the flash pins stored in eFuse, so in-package flash is unreachable\n· Before writing, the flash ID is read; if the flash does not answer the page stops\n  immediately with the reason instead of compressing 700 KB and dying mid-write\n· Connect, sync and stub upload are retried three times with a chip reset between\n  attempts (a dropped stream needs a reset, not a replug)\n· Reset after flashing tries the watchdog reset first (USB Serial/JTAG has no RTS,\n  so hard_reset does nothing there)\n· Tapping connect twice no longer opens and claims the same device twice\n· Previously authorised devices are reused on load\n· Added a 'listen to raw output' diagnostic: it sends nothing and reads for 5 s;\n  repeated boot banners mean the board is in a reboot loop\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
+    changelogText:"2026-10-04\n\u00b7 Added “Write UF2”: an RP2040 / RP2350 in BOOTSEL mode is a USB mass-storage\n  device, so this page writes it over Bulk-Only Transport instead of depending on\n  the phone mounting that little drive\n\u00b7 A UF2 no longer claims “a browser cannot do this”\n\u00b7 If the browser protects mass storage (class 0x08) and refuses to claim it, that is\n  stated plainly and the Android app is suggested instead\n\u00b7 The board reboots on the final block and never replies to it; that counts as success\n\n2026-10-03\n· Several files can now be picked at once, each with its own offset (an ESP32-S3 needs bootloader / partition table / app)\n· This page is now an ESP32-S2 / S3 firmware flasher\n· Implemented the esptool ROM protocol (SLIP framing + FLASH_BEGIN/DATA/END), no flasher stub uploaded\n· The top banner now states plainly that Chrome blocks CCID, so this page cannot configure a running device\n· Removed the \"Secure boot / secure lock\" section entirely (impossible here)\n· File picking no longer assumes .bin; the format is detected from content\n· Restored the startup popup for no-WebUSB / non-HTTPS (a log line is too easy to scroll past)\n· Added no-cache meta tags, a visible page version stamp, a \"Force reload\" button, and an\n  automatic comparison against what Pages serves, with a banner when the local copy is stale\n· When no device appears the page explains why instead of just saying \"cancelled\"\n· The stub is used again by default: Espressif documents that --no-stub makes\n  esptool ignore the flash pins stored in eFuse, so in-package flash is unreachable\n· Before writing, the flash ID is read; if the flash does not answer the page stops\n  immediately with the reason instead of compressing 700 KB and dying mid-write\n· Connect, sync and stub upload are retried three times with a chip reset between\n  attempts (a dropped stream needs a reset, not a replug)\n· Reset after flashing tries the watchdog reset first (USB Serial/JTAG has no RTS,\n  so hard_reset does nothing there)\n· Tapping connect twice no longer opens and claims the same device twice\n· Previously authorised devices are reused on load\n· Added a 'listen to raw output' diagnostic: it sends nothing and reads for 5 s;\n  repeated boot banners mean the board is in a reboot loop\n\nEarlier\n· Was a CCID configuration tool (unusable: browsers block CCID)\n· Added the Chinese / English switch",
   }
 };
 
@@ -552,7 +582,9 @@ document.getElementById('modalMask').addEventListener('click', ev=>{
 let device = null;
 let epIn = null, epOut = null, ifaceNum = null;
 let fwData = null;      // Uint8Array
+let fwKind = null;      // 'esp' | 'uf2' | ... , as sniffed on pick
 let fwReady = false;    // recognised as an ESP image
+let uf2Ready = false;   // recognised as a UF2 (RP2040 / RP2350)
 // Extra images, each with its own offset. ESP32-S3 needs three of them
 // (bootloader, partition table, app) and they MUST go over one connection:
 // re-opening the device between files lets a late reply from the previous
@@ -760,6 +792,123 @@ function updateFlashGate(){
   const e = document.getElementById('btnErase');
   if (e) e.disabled = !hasDev;
   document.getElementById('btnFlash').disabled = !(hasDev && (fwReady || extraFiles.length));
+  const u = document.getElementById('btnUf2');
+  if (u) u.disabled = !uf2Ready;
+}
+
+/* ------------------------------ UF2 over WebUSB ------------------------------
+   An RP2040 / RP2350 in BOOTSEL mode is a USB mass-storage device, so it can
+   be driven with Bulk-Only Transport instead of relying on the host to mount
+   a drive - which a phone often will not do.
+
+   Caveat, stated rather than hidden: mass storage (class 0x08) is one of the
+   interface classes browsers deliberately protect, so claimInterface() may be
+   refused outright. The page tries anyway and, if it is refused, says exactly
+   that instead of failing with a bare error.                                */
+function pickMscInterface(dev){
+  const ifaces = (dev.configuration && dev.configuration.interfaces) || [];
+  for (const iface of ifaces){
+    const alt = iface.alternates[0];
+    if (!alt || alt.interfaceClass !== 0x08) continue;
+    let inEp = null, outEp = null;
+    for (const ep of alt.endpoints){
+      if (ep.type !== 'bulk') continue;
+      if (ep.direction === 'in') inEp = ep.endpointNumber;
+      else outEp = ep.endpointNumber;
+    }
+    if (inEp != null && outEp != null)
+      return {n: iface.interfaceNumber, inEp, outEp};
+  }
+  return null;
+}
+
+let uf2Tag = 1;
+function uf2Cbw(cdb, len, dirIn){
+  const b = new Uint8Array(31);
+  const dv = new DataView(b.buffer);
+  const tag = uf2Tag++;
+  dv.setUint32(0, 0x43425355, true);   // "USBC"
+  dv.setUint32(4, tag, true);
+  dv.setUint32(8, len, true);
+  b[12] = dirIn ? 0x80 : 0x00;
+  b[13] = 0;                            // LUN
+  b[14] = cdb.length;
+  b.set(cdb, 15);
+  return {bytes: b, tag};
+}
+async function uf2Csw(tag){
+  const r = await device.transferIn(epIn, 13);
+  const d = new DataView(r.data.buffer);
+  if (r.data.byteLength < 13 || d.getUint32(0, true) !== 0x53425355)
+    throw new Error(LANG==='zh' ? '状态包不对' : 'bad status packet');
+  if (d.getUint32(4, true) !== tag)
+    throw new Error((LANG==='zh' ? '状态包序号不匹配 ' : 'status tag mismatch ') + tag);
+  return d.getUint8(12);
+}
+async function uf2WriteBlock(lba, block){
+  const cdb = new Uint8Array(10);
+  const cv = new DataView(cdb.buffer);
+  cdb[0] = 0x2A;                                  // WRITE(10)
+  cv.setUint32(2, lba, false);                    // LBA, big endian
+  cdb[6] = 0;
+  cv.setUint16(7, 1, false);                      // one block
+  const cbw = uf2Cbw(cdb, block.length, false);
+  await device.transferOut(epOut, cbw.bytes);
+  await device.transferOut(epOut, block);
+  const st = await uf2Csw(cbw.tag);
+  if (st !== 0) throw new Error((LANG==='zh' ? '设备拒绝写入，状态 0x'
+                                             : 'device refused the write, status 0x')
+                                + st.toString(16));
+}
+
+async function doWriteUf2(){
+  if (!fwData || fwKind !== 'uf2'){ log(t('uf2NeedFile'),'warn'); return; }
+  if (!device){ log(t('noDevice'),'warn'); return; }
+  const btn = document.getElementById('btnUf2');
+  if (btn) btn.disabled = true;
+  try {
+    const pick = pickMscInterface(device);
+    if (!pick){
+      log(t('uf2NoMsc'),'err');
+      showModal('mUf2Title', t('uf2NoMscBody'), 'err');
+      return;
+    }
+    log(t('uf2Using',{n:pick.n}), 'ok');
+    try { await device.claimInterface(pick.n); }
+    catch(e){
+      // Protected class: the browser is refusing on purpose.
+      log(t('uf2Blocked') + ' — ' + e.message, 'err');
+      showModal('mUf2Title', t('uf2BlockedBody'), 'err');
+      return;
+    }
+    ifaceNum = pick.n; epIn = pick.inEp; epOut = pick.outEp;
+    const total = Math.floor(fwData.length / 512);
+    log(t('uf2Writing',{n:total}), 'dim');
+    let lastCsw = true;
+    for (let i = 0; i < total; i++){
+      const block = fwData.subarray(i*512, (i+1)*512);
+      try {
+        await uf2WriteBlock(i, block);
+      } catch(e){
+        // The board reboots the instant the last block lands, so the reply to
+        // that one block genuinely never arrives.
+        if (i === total - 1){ lastCsw = false; log(t('uf2LastNoReply'),'dim'); }
+        else throw e;
+      }
+      const pct = Math.round((i+1)*100/total);
+      const bar = document.getElementById('bar');
+      const inner = document.getElementById('barInner');
+      if (bar && inner){ bar.classList.remove('hidden'); inner.style.width = pct + '%'; }
+      const pt = document.getElementById('progText');
+      if (pt) pt.textContent = pct + '%';
+    }
+    log(t('uf2Done'), 'ok');
+    showModal('mUf2Title', t('uf2DoneBody'), 'ok');
+  } catch(e){
+    log(t('uf2Failed') + ': ' + e.message, 'err');
+  } finally {
+    if (btn) btn.disabled = !uf2Ready;
+  }
 }
 
 /* --------------------------- SLIP + ROM protocol --------------------------- */
@@ -967,11 +1116,15 @@ async function onFile(ev){
   const buf = new Uint8Array(await f.arrayBuffer());
   fwData = buf;
   const kind = sniff(buf);
+  fwKind = kind;
   fwReady = (kind === 'esp');
+  // A UF2 is a complete image for RP2040 / RP2350: no offsets, no second
+  // file, and this page can now write it straight over WebUSB.
+  uf2Ready = (kind === 'uf2');
   const out = document.getElementById('fileOut');
   let cls = 'lv-warn', msg;
   if (kind==='esp'){      cls='lv-ok'; msg=t('sniffEsp'); }
-  else if (kind==='uf2'){ msg=t('sniffUf2') + '\n' + t('sniffUf2Hint'); }
+  else if (kind==='uf2'){ cls='lv-ok'; msg=t('sniffUf2') + '\n' + t('sniffUf2Hint'); }
   else if (kind==='zip'){ msg=t('sniffZip'); }
   else if (kind==='gzip'){ msg=t('sniffGzip'); }
   else if (kind==='html'){ msg=t('sniffHtml'); }
@@ -981,7 +1134,7 @@ async function onFile(ev){
     '<div class="'+cls+'" style="margin-top:8px;font-size:13px;white-space:pre-wrap">'+msg+'</div>';
   log(t('filePicked') + ': ' + f.name + ' — ' + t('fileSize') + ' ' + buf.length + ' B',
       fwReady ? 'ok' : 'warn');
-  if (!fwReady) log(msg.replace(/\n/g,' '), 'warn');
+  if (!fwReady && !uf2Ready) log(msg.replace(/\n/g,' '), 'warn');
   document.getElementById('fileLabel').textContent = f.name;
   primaryName = f.name;
   updateFlashGate();

@@ -371,15 +371,21 @@ KV_RULES = f"""
 <FieldLabel@Label>:
     font_name: 'AppFont'
     size_hint_x: 0.42
+    size_hint_y: None
+    height: max(dp(44), self.texture_size[1] + dp(10))
     halign: 'left'
     valign: 'center'
-    text_size: self.size
+    text_size: self.width, None
     font_size: '14sp'
     color: {_rgba(C_MUTED)}
 
+# Rows used to be a fixed dp(44), which is fine for Chinese but clips a long
+# English field name: FieldLabel wraps (text_size is bound) yet the row cannot
+# grow, so the second line is cut off. Letting both sizes follow the text
+# keeps every row readable in either language.
 <Row@BoxLayout>:
     size_hint_y: None
-    height: dp(44)
+    height: self.minimum_height
     spacing: dp(6)
 """
 
@@ -513,6 +519,13 @@ BoxLayout:
                 id: btn_flash_all
                 text: '@@fw_flash_esp@@'
                 on_release: app.fw_flash()
+            MenuButton:
+                id: btn_write_uf2
+                text: '@@fw_write_uf2@@'
+                on_release: app.fw_write_uf2()
+            InfoLabel:
+                text: '@@fw_write_uf2_hint@@'
+                font_size: '12sp'
             MenuButton:
                 text: '@@fw_save_uf2@@'
                 on_release: app.fw_save_uf2()
@@ -953,7 +966,8 @@ BoxLayout:
 # missing file.
 _IMPORT_ERROR = None
 try:
-    from picokeyapp import ctap, ctapcfg, detect, flasher, fonts, i18n, usbhost
+    from picokeyapp import (ctap, ctapcfg, detect, flasher, fonts, i18n,
+                            usbhost, uf2write)
     from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
 except Exception:
     _IMPORT_ERROR = traceback.format_exc()
@@ -1745,6 +1759,69 @@ class PicoKeyApp(App):
 
         self._worker(work, on_ok=ok, busy_text=i18n.t("fw_erasing"))
 
+    def fw_write_uf2(self):
+        """Copy a UF2 straight onto an RP2040/RP2350 board in BOOTSEL mode.
+
+        The usual ritual is "the board becomes a USB drive, drop the file on
+        it". Phones frequently cannot mount that drive, so two routes are
+        tried in order of how likely they are to work:
+
+        1. the drive is already mounted somewhere readable -> plain copy;
+        2. otherwise -> speak USB Mass Storage ourselves, no mount needed.
+        """
+        if self._fw_kind != "uf2":
+            self.status_text = i18n.t("fw_uf2_need_uf2")
+            return
+        if not self._fw_data:
+            self.fw_info_text = i18n.t("fw_no_file")
+            return
+        data = self._fw_data
+        if not flasher.uf2_is_valid(data):
+            self.status_text = i18n.t("fw_bad_uf2")
+            return
+        family = flasher.uf2_target_family(data)
+        self.log(f"fw_write_uf2: family={family}, {len(data)} bytes, "
+                 f"{len(data) // 512} blocks")
+        device = self._fw_dev
+
+        def work():
+            mount = uf2write.find_mounted_bootsel()
+            if mount:
+                path = uf2write.write_uf2_mounted(mount, data)
+                return {"how": "mounted", "path": path}
+            if device is None:
+                raise UserError(i18n.t("fw_no_bootloader"))
+            intfs = device.interfaces_of_class(flasher.USB_CLASS_MASS_STORAGE)
+            if not intfs:
+                raise UserError(i18n.t("fw_no_bootloader"))
+            self.log("fw_write_uf2: drive not mounted, using USB mass "
+                     "storage directly")
+            with usbhost.Connection(device, intfs[0]) as conn:
+                result = uf2write.write_uf2(
+                    conn, data,
+                    progress=lambda i, n: Clock.schedule_once(
+                        lambda dt: setattr(self, "status_text",
+                                           i18n.t("fw_uf2_progress", i=i, n=n))))
+            result["how"] = "bot"
+            return result
+
+        def ok(result):
+            self.busy = False
+            if result.get("how") == "mounted":
+                self.status_text = i18n.t("fw_uf2_copied")
+                self.log("fw_write_uf2: copied to " + str(result.get("path")))
+                return
+            self.status_text = i18n.t("fw_uf2_done")
+            self.log(f"fw_write_uf2: {result.get('blocks')} blocks written")
+            if not result.get("final_csw"):
+                # The board reboots the moment the last block lands, so no
+                # reply to that block is expected. Saying so here stops it
+                # looking like a silent failure.
+                self.log("fw_write_uf2: last block had no reply "
+                         "(the board already rebooted)")
+
+        self._worker(work, on_ok=ok, busy_text=i18n.t("fw_working", n=0))
+
     def fw_save_uf2(self):
         """Hand a UF2 to the system file manager (RP2040/RP2350 path)."""
         if self._fw_kind != "uf2":
@@ -2361,7 +2438,13 @@ class PicoKeyApp(App):
             except SecureBootError as e:
                 # Irreversible on real hardware: never let a refusal look like
                 # success, and never bury the reason under a stack trace.
-                raise UserError(i18n.t("err_secure_write", reason=str(e)))
+                reason = str(e)
+                # 6A86/6A82 mean the firmware refused the command. That is the
+                # one case where retrying is pointless and even risky, so say
+                # so instead of leaving the reader to guess.
+                if "6A86" in reason or "6A82" in reason or "6D00" in reason:
+                    reason += "\n\n" + i18n.t("hint_secure_unsupported")
+                raise UserError(i18n.t("err_secure_write", reason=reason))
             return slot
 
         def done(slot):

@@ -39,6 +39,36 @@ If the build fails the job stops early and no version number is consumed.
 
 ---
 
+## [v0.3.2] - 2026-10-05
+
+### Added
+- Two more self-checks: the bundled font must be able to draw every glyph the interface can show, and field rows must size themselves to their text instead of using a fixed height that clips a wrapped English label.
+
+### Fixed
+- When secure boot is refused by the firmware (6A86 / 6A82 / 6D00), the message now also explains that this usually means the firmware does not accept the command rather than that a parameter was wrong, so an irreversible action is not retried blindly.
+- Symbols the bundled font cannot draw (some arrows, ticks, crosses and warning marks) were replaced with forms that render; they previously appeared as empty boxes on the phone.
+
+### Changed
+- The bundled CJK font was re-subset to the characters the interface actually uses: 6890 glyphs down to 850, 2.12 MB down to 0.20 MB, cutting the assets shipped inside the APK by roughly 90%.
+
+## [v0.3.1] - 2026-10-04
+
+### Added
+- Direct UF2 write: an RP2040 / RP2350 in BOOTSEL mode is a USB mass-storage
+  device, so the image is now written over Bulk-Only Transport instead of
+  relying on the phone mounting that little drive. When the phone did mount it,
+  the simpler plain file copy is used instead
+- The web page can write a UF2 the same way. A browser may protect mass storage
+  and refuse to claim the interface; that is then stated plainly and the Android
+  app is suggested, rather than surfacing as an opaque error
+- The board reboots on the final block and never replies to it; that now counts
+  as success instead of being reported as a failure
+
+### Fixed
+- The secure boot / secure lock screen described INS 1D while the code actually
+  sends INS 1C with P1=02. On an irreversible operation that mismatch is a real
+  hazard, so the text now matches what is sent
+
 ## [v0.3.0] - 2026-10-02
 
 The `uv-config` branch is merged into the main line; the two version sequences
