@@ -237,7 +237,7 @@
 /* Bump this every time the file changes. It is printed at the bottom of the
    page so it is obvious at a glance whether the browser is showing the current
    copy, and checkForUpdate() compares it against what GitHub Pages serves. */
-const PAGE_VERSION = 'r12';
+const PAGE_VERSION = 'r13';
 
 let LANG = 'zh';
 const I18N = {
@@ -317,6 +317,9 @@ const I18N = {
     fileSize:"大小",
     sniffEsp:"识别为 ESP 镜像（magic 0xE9）",
     sniffUf2:"识别为 UF2 —— 这是 RP2040 / RP2350 的格式",
+    sniffUf2Family:"适用芯片：",
+    sniffUf2Rp2040:"这是 Pico 1（RP2040）的固件。Pico 2（RP2350）需要文件名带 pico2 的那一份——刷错不会报错，只是板子完全没有反应。",
+    sniffUf2Rp2350:"这是 Pico 2（RP2350）的固件，适用于 RP2350 开发板。",
     sniffUf2Hint:"UF2 不需要填偏移，一个文件就是完整镜像。点下面的「直接写入 UF2」，本页会走 USB 大容量存储协议写入，不依赖手机挂载那个小盘。\n注意：Chrome 把大容量存储列为受保护接口，可能会直接拒绝；被拒时请用安卓 App。",
     btnUf2:"直接写入 UF2（RP2040/RP2350）",
     hintUf2:"走 USB 大容量存储协议（Bulk-Only Transport）写入，不需要手机挂载 U 盘、不需要储存权限。若浏览器拒绝接管接口，说明它把大容量存储当受保护接口屏蔽了，改用安卓 App 即可。",
@@ -436,6 +439,9 @@ const I18N = {
     fileSize:"Size",
     sniffEsp:"Looks like an ESP image (magic 0xE9)",
     sniffUf2:"That is a UF2 — the RP2040 / RP2350 format",
+    sniffUf2Family:"Target chip:",
+    sniffUf2Rp2040:"This image is for Pico 1 (RP2040). A Pico 2 (RP2350) needs the one with pico2 in the file name — a mismatch is not reported, the board simply does nothing.",
+    sniffUf2Rp2350:"This image is for Pico 2 (RP2350), for RP2350 boards.",
     sniffUf2Hint:"A UF2 needs no offset: one file is the whole image. Tap \u201cWrite UF2\u201d below and this page writes it over the USB mass-storage protocol, without the phone having to mount that little drive.\nNote: Chrome classes mass storage as a protected interface and may refuse it outright; if so, use the Android app.",
     btnUf2:"Write UF2 (RP2040/RP2350)",
     hintUf2:"Writes over the USB mass-storage protocol (Bulk-Only Transport): no drive mounting and no storage permission needed. If the browser refuses to take the interface, it treats mass storage as a protected class \u2014 use the Android app instead.",
@@ -1110,6 +1116,23 @@ function sniff(bytes){
   if (bytes.length && bytes[0]===0xE9) return 'esp';
   return 'unknown';
 }
+// Family IDs from the Pico SDK. The bootloader silently drops a UF2 whose
+// family does not match the chip, so a Pico 1 image written to a Pico 2 looks
+// exactly like a flash that succeeded and did nothing — and both files sit on
+// the same release page with names that differ by one word.
+// The ID lives at offset 28 and only counts when flags bit 0x2000 is set.
+const UF2_FAMILIES = {
+  0xe48bff56:'RP2040', 0xe48bff57:'absolute',
+  0xe48bff59:'RP2350 (ARM-S)', 0xe48bff5a:'RP2350 (RISC-V)', 0xe48bff5b:'RP2350 (ARM-NS)'
+};
+function uf2Family(bytes){
+  if (bytes.length < 512) return null;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const flags = dv.getUint32(8, true);
+  if (!(flags & 0x2000)) return null;          // familyID not present
+  const fam = dv.getUint32(28, true);
+  return UF2_FAMILIES[fam] || ('0x' + fam.toString(16));
+}
 async function onFile(ev){
   const f = ev.target.files && ev.target.files[0];
   if (!f) return;
@@ -1124,7 +1147,18 @@ async function onFile(ev){
   const out = document.getElementById('fileOut');
   let cls = 'lv-warn', msg;
   if (kind==='esp'){      cls='lv-ok'; msg=t('sniffEsp'); }
-  else if (kind==='uf2'){ cls='lv-ok'; msg=t('sniffUf2') + '\n' + t('sniffUf2Hint'); }
+  else if (kind==='uf2'){
+    cls='lv-ok';
+    const fam = uf2Family(buf);
+    msg = t('sniffUf2') + (fam ? '\n' + t('sniffUf2Family') + ' ' + fam : '')
+        + '\n' + t('sniffUf2Hint');
+    if (fam === 'RP2040'){
+      cls = 'lv-warn';
+      msg += '\n\n' + t('sniffUf2Rp2040');
+    } else if (fam && fam.indexOf('RP2350') === 0){
+      msg += '\n\n' + t('sniffUf2Rp2350');
+    }
+  }
   else if (kind==='zip'){ msg=t('sniffZip'); }
   else if (kind==='gzip'){ msg=t('sniffGzip'); }
   else if (kind==='html'){ msg=t('sniffHtml'); }

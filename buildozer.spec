@@ -6,14 +6,14 @@ package.domain = org.picokey
 source.dir = .
 # ttf is required: the bundled CJK font (assets/fonts/) has to end up
 # inside the APK or every Chinese label renders as a tofu box.
-source.include_exts = py,png,jpg,kv,atlas,txt,md,xml,ttf
+source.include_exts = py,png,jpg,kv,atlas,txt,xml,ttf
 source.exclude_dirs = tests,docs,.github,tools,build,bin,.buildozer,__pycache__
 
 # Bump this before every release you want to keep. The workflow derives the
 # release tag from it (v0.2.0 here), and it refuses to overwrite an existing
 # tag unless you explicitly ask - so raising this number is what actually
 # preserves earlier versions in Releases.
-version = 0.3.2
+version = 0.3.3
 
 # python3 + kivy pull in pyjnius by themselves; cryptography/pycvc are NOT
 # listed on purpose (they would need a Rust toolchain for the modern

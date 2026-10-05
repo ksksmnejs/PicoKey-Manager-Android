@@ -1542,8 +1542,16 @@ class PicoKeyApp(App):
         lines = [f"{i18n.t('fw_kind')}: {info['detail']}",
                  f"{i18n.t('fw_size')}: {len(data)} bytes"]
         if info["kind"] == "uf2":
-            lines.append(f"{i18n.t('fw_target')}: "
-                         f"{flasher.uf2_target_family(data)}")
+            family = flasher.uf2_target_family(data)
+            lines.append(f"{i18n.t('fw_target')}: {family}")
+            # The bootloader silently ignores a family mismatch, so a Pico 1
+            # image copied to a Pico 2 looks like a successful flash that
+            # simply does nothing. The release page lists both, and the names
+            # differ by one word, so say which one this is.
+            if family.startswith("RP2040"):
+                lines.append(i18n.t("fw_uf2_rp2040"))
+            elif family.startswith("RP2350"):
+                lines.append(i18n.t("fw_uf2_rp2350"))
             if not flasher.uf2_is_valid(data):
                 lines.append("(UF2 blocks look damaged)")
         if info.get("chip"):

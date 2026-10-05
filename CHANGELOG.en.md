@@ -39,6 +39,15 @@ If the build fails the job stops early and no version number is consumed.
 
 ---
 
+## [v0.3.3] - 2026-10-05
+
+### Fixed
+- A UF2's target family was read from the wrong place. The family ID sits at offset 28 of the block, but the code took the upper bits of the `flags` field, and neither of the two IDs in its table was a real one. Every normal UF2 therefore reported "unknown" — precisely when the answer matters, because it is what tells a Pico 1 image from a Pico 2 one, and only one of them will boot. Now read from the correct field using the Pico SDK IDs, with an explicit warning when a Pico 1 image is selected.
+- The web page gained the same recognition: it shows the target chip for a UF2 and warns when a Pico 1 image is picked.
+
+### Changed
+- The APK no longer ships the README and changelog (about 42 KB); nothing reads them at run time.
+
 ## [v0.3.2] - 2026-10-05
 
 ### Added
