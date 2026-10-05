@@ -430,6 +430,17 @@ STRINGS.update({
     "fw_kind": {"zh": "识别结果", "en": "Detected"},
     "fw_size": {"zh": "大小", "en": "Size"},
     "fw_target": {"zh": "适用芯片", "en": "Target chip"},
+    "fw_uf2_rp2040": {
+        "zh": "这是 Pico 1（RP2040）的固件。Pico 2（RP2350）需要文件名带 pico2 的那一"
+              "份——刷错不会报错，只是板子完全没有反应。",
+        "en": "This image is for Pico 1 (RP2040). A Pico 2 (RP2350) needs the "
+              "one with pico2 in the file name - a mismatch is not reported, "
+              "the board simply does nothing.",
+    },
+    "fw_uf2_rp2350": {
+        "zh": "这是 Pico 2（RP2350）的固件，适用于 RP2350 开发板。",
+        "en": "This image is for Pico 2 (RP2350), for RP2350 boards.",
+    },
     "fw_empty": {"zh": "空文件", "en": "empty file"},
     "fw_uf2": {"zh": "UF2，{n} 个块", "en": "UF2, {n} blocks"},
     "fw_esp": {"zh": "ESP 镜像，{n} 个段", "en": "ESP image, {n} segments"},

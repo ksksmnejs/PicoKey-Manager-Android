@@ -102,14 +102,48 @@ def _uf2_block_count(data: bytes) -> int:
     return len(data) // UF2_BLOCK
 
 
-def uf2_target_family(data: bytes) -> str:
-    """Which chip family a UF2 is built for, from the block flags."""
+# Family IDs, from the Pico SDK. The bootloader refuses a UF2 whose family
+# does not match the chip, so this is the only thing that tells a Pico 2 image
+# from a Pico 1 one - and those two are downloadable from the same release
+# page with near-identical names.
+UF2_FAMILIES = {
+    0xE48BFF56: "RP2040",
+    0xE48BFF57: "absolute",
+    0xE48BFF59: "RP2350 (ARM-S)",
+    0xE48BFF5A: "RP2350 (RISC-V)",
+    0xE48BFF5B: "RP2350 (ARM-NS)",
+}
+
+# Header field offsets, per the UF2 spec.
+UF2_OFF_FLAGS = 8
+UF2_OFF_FAMILY = 28      # fileSize / board family ID
+UF2_FLAG_FAMILY_PRESENT = 0x2000
+
+
+def uf2_family_id(data: bytes) -> int | None:
+    """The board family ID of a UF2, or None if the file does not carry one.
+
+    The ID sits at offset 28 and is only meaningful when flags bit 0x2000 is
+    set. Reading it as part of `flags` is wrong: flags is a separate field at
+    offset 8 whose upper bits are reserved, so that misreading reports
+    "unknown" for every real UF2 - which is exactly when the answer matters,
+    because it is what distinguishes a Pico image from a Pico 2 one.
+    """
     if len(data) < UF2_BLOCK:
+        return None
+    flags, = struct.unpack_from("<I", data, UF2_OFF_FLAGS)
+    if not flags & UF2_FLAG_FAMILY_PRESENT:
+        return None
+    fam, = struct.unpack_from("<I", data, UF2_OFF_FAMILY)
+    return fam
+
+
+def uf2_target_family(data: bytes) -> str:
+    """Which chip family a UF2 is built for, as a readable name."""
+    fam = uf2_family_id(data)
+    if fam is None:
         return "unknown"
-    flags, = struct.unpack_from("<I", data, 8)
-    # bit 0 = "not main flash"; family IDs live in the upper bits
-    fam = (flags >> 24) & 0xFF
-    return {0x00: "unknown", 0x0A: "RP2040", 0x21: "RP2350"}.get(fam, hex(fam))
+    return UF2_FAMILIES.get(fam, hex(fam))
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ import struct
 import time
 
 from .i18n import t
-from . import uf2write
+from . import uf2write, flasher
 
 # From the defining module rather than the package: the package __init__ is a
 # separate file, and a partial upload that leaves it behind would turn the
@@ -899,11 +899,82 @@ def _check_uf2_web():
     keys = ["btnUf2", "hintUf2", "uf2NeedFile", "uf2NoMsc", "uf2NoMscBody",
             "uf2Using", "uf2Blocked", "uf2BlockedBody", "uf2Writing",
             "uf2LastNoReply", "uf2Done", "uf2DoneBody", "uf2Failed",
+            "sniffUf2Family", "sniffUf2Rp2040", "sniffUf2Rp2350",
             "mUf2Title"]
     thin = [k for k in keys if src.count("    " + k + ':"') != 2]
     lines.append(_check("every new string exists in both languages", not thin,
                         "" if not thin else "missing from one dictionary: "
                                             + ", ".join(thin)))
+    return lines
+
+
+def _mk_uf2_family(fam: int, flags: int = 0x2000) -> bytes:
+    """One well-formed UF2 block carrying `fam` as its board family ID."""
+    import struct
+    b = bytearray(512)
+    struct.pack_into("<II", b, 0, flasher.UF2_MAGIC_START0,
+                     flasher.UF2_MAGIC_START1)
+    struct.pack_into("<I", b, 8, flags)
+    struct.pack_into("<I", b, 12, 0x10000000)
+    struct.pack_into("<I", b, 16, 256)
+    struct.pack_into("<I", b, 20, 0)
+    struct.pack_into("<I", b, 24, 1)
+    struct.pack_into("<I", b, 28, fam)
+    struct.pack_into("<I", b, 508, flasher.UF2_MAGIC_END)
+    return bytes(b)
+
+
+def _check_uf2_family():
+    """The family ID is what separates a Pico 1 image from a Pico 2 one.
+
+    The bootloader drops a UF2 whose family does not match the chip, and says
+    nothing. So a Pico 1 image copied onto a Pico 2 looks exactly like a
+    successful flash that did nothing - and both files sit on the same release
+    page with names that differ by one word.
+
+    It was read from `flags` instead of from the familyID field at offset 28,
+    and the two IDs in the table (0x0A, 0x21) were not the real ones. Every
+    real UF2 therefore reported "unknown", which is precisely when the answer
+    was needed.
+    """
+    lines = []
+
+    want = {0xE48BFF56: "RP2040", 0xE48BFF57: "absolute",
+            0xE48BFF59: "RP2350 (ARM-S)", 0xE48BFF5A: "RP2350 (RISC-V)",
+            0xE48BFF5B: "RP2350 (ARM-NS)"}
+    wrong = {f: (flasher.uf2_target_family(_mk_uf2_family(f)), w)
+             for f, w in want.items()}
+    wrong = {f: v for f, v in wrong.items() if v[0] != v[1]}
+    lines.append(_check("each known family ID maps to its real chip", not wrong,
+                        "" if not wrong else "mismatched: " + ", ".join(
+                            f"{hex(f)} -> {g} (want {w})"
+                            for f, (g, w) in wrong.items())))
+
+    # The field is only meaningful when the flag says it is present.
+    lines.append(_check("a UF2 without the family flag reads as unknown",
+                        flasher.uf2_target_family(
+                            _mk_uf2_family(0xE48BFF59, flags=0)) == "unknown",
+                        "flags bit 0x2000 is not checked; "
+                        "fileSize would be read as a family ID"))
+
+    # The old code read (flags >> 24) & 0xFF, which is 0 for a normal UF2 and
+    # so always fell through to "unknown". If anyone puts it back, this fires
+    # even though "unknown" is also the right answer for a file with no flag.
+    src = open(os.path.join(_SELFTEST_ROOT, "picokeyapp", "flasher.py"),
+               encoding="utf-8").read()
+    lines.append(_check("the family ID comes from offset 28, not from flags",
+                        "struct.unpack_from(\"<I\", data, UF2_OFF_FAMILY)" in src
+                        and "flags >> 24" not in src,
+                        "reading the family out of the flags word always "
+                        "yields zero"))
+
+    # And the UI has to say which one it is, or the distinction is invisible.
+    main = open(os.path.join(_SELFTEST_ROOT, "main.py"),
+                encoding="utf-8").read()
+    lines.append(_check("a Pico 1 image is called out in the firmware info",
+                        "fw_uf2_rp2040" in main,
+                        "the family is printed but never explained, so a "
+                        "mismatched image still looks fine"))
     return lines
 
 
@@ -2224,6 +2295,7 @@ def run() -> str:
     lines.append("")
     lines.extend(_check_uf2_write())
     lines.extend(_check_uf2_web())
+    lines.extend(_check_uf2_family())
     lines.extend(_check_dict_quotes())
     lines.extend(_check_no_hang_no_false_alarm())
     lines.append("")
