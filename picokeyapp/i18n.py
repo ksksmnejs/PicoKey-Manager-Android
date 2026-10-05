@@ -198,13 +198,16 @@ STRINGS.update({
         "en": "Rescue applet readable objects (INS 1E, read-only, no side effects):",
     },
     "probe_footer": {
-        "zh": "已知：P1=01 是 PHY 配置，P1=02 是 Flash 信息。若表中没有返回安全状态的对象，"
-             "说明当前固件没有实现安全启动；安全启动写命令是 INS 1D（P1=密钥槽，P2=是否锁定），"
-             "不要用 1C 去写——那是写 PHY 的指令。",
-        "en": "Known: P1=01 is the PHY config, P1=02 is the flash info. If no object in the "
-             "list reports a secure state, this firmware has no secure-boot support. The "
-             "secure-boot write is INS 1D (P1 = bootkey slot, P2 = lock flag); do not use "
-             "1C for it, that one writes the PHY.",
+        "zh": "已知：P1=01 是 PHY 配置，P1=02 是 Flash 信息，P1=03 是安全状态。若表中没有返回"
+             "安全状态的对象，说明当前固件没有实现安全启动。安全启动的写命令是 INS 1C、P1=02、"
+             "数据两字节 [密钥槽, 是否锁定]；同一个 1C 配 P1=01 才是写 PHY——两者靠 P1 区分，"
+             "不是靠 INS。早期版本误用过 INS 1D，上游并不存在该指令。",
+        "en": "Known: P1=01 is the PHY config, P1=02 is the flash info, P1=03 is the secure "
+             "state. If no object in the list reports a secure state, this firmware has no "
+             "secure-boot support. The secure-boot write is INS 1C with P1=02 and a two-byte "
+             "body [bootkey slot, lock flag]; 1C with P1=01 is what writes the PHY — the two "
+             "are told apart by P1, not by INS. An earlier build mistakenly used INS 1D, "
+             "which does not exist upstream.",
     },
     "selftest_ui": {"zh": "界面通道控制", "en": "UI channel gating"},
     "selftest_failed": {
@@ -305,13 +308,13 @@ STRINGS.update({
     "dlg_secure_body": {
         "zh": "这会把启动密钥烧进 OTP/eFuse，无法撤销。\n\n"
              "密钥槽：{slot}\n永久锁定：{lock}\n\n"
-             "⚠️ 如果勾选了永久锁定，后果不只是「只能跑签名固件」：\n"
+             "! 如果勾选了永久锁定，后果不只是「只能跑签名固件」：\n"
              "上游文档明确说明，启用安全锁会同时使除官方 Pico Key 之外的所有密钥失效——"
              "此后只有官方签名的固件能被识别，无法再自行编译或刷入自定义固件。\n\n"
              "烧错槽位可能导致板子再也无法启动未签名固件。确认无误请输入 CONFIRM。",
         "en": "This burns the boot key into OTP/eFuse and cannot be undone.\n\n"
               "Key slot: {slot}\nLock permanently: {lock}\n\n"
-              "⚠️ If permanent lock is ticked, the consequence is larger than "
+              "! If permanent lock is ticked, the consequence is larger than "
               "\"signed firmware only\": upstream documents that enabling the "
               "secure lock also invalidates every key except the official Pico "
               "Key one. Only officially signed firmware will be recognised "
@@ -469,11 +472,27 @@ STRINGS.update({
         "en": "The minimum PIN length can only ever increase. Lowering it again requires a full authenticator reset, which deletes every credential.",
     },
     "uv_set_min_go": {"zh": "设置", "en": "Set"},
-    "uv_set_min_hint": {"zh": "新的最小长度（4–63）", "en": "new minimum length (4-63)"},
+    "uv_set_min_hint": {"zh": "新的最小长度（4-63）", "en": "new minimum length (4-63)"},
     "uv_bad_length": {"zh": "请填一个 4 到 63 之间的数字。", "en": "Enter a number between 4 and 63."},
     "uv_min_set": {"zh": "最小 PIN 长度已设为 %d。", "en": "Minimum PIN length set to %d."},
     "fw_flash_esp": {"zh": "刷入 ESP32（会覆盖现有固件）", "en": "Flash ESP32 (overwrites current firmware)"},
     "fw_save_uf2": {"zh": "交给文件管理器保存（RP2040/RP2350）", "en": "Save via file manager (RP2040/RP2350)"},
+    "fw_write_uf2": {"zh": "直接写入开发板（RP2040/RP2350）", "en": "Write straight to the board (RP2040/RP2350)"},
+    "fw_write_uf2_hint": {
+        "zh": "RP2040 / RP2350 在 BOOTSEL 模式下会变成一个 U 盘，正常情况下把 .uf2 拷进去即可。但手机常常挂载不了这个小盘，这条路径绕开挂载，直接通过 USB 写入，不需要储存权限。",
+        "en": "An RP2040 / RP2350 in BOOTSEL mode becomes a tiny USB drive; normally the .uf2 is simply copied onto it. Phones often fail to mount that drive, so this path skips mounting entirely and writes over USB directly - no storage permission needed.",
+    },
+    "fw_uf2_need_uf2": {"zh": "请先选择一个 .uf2 文件。", "en": "Pick a .uf2 file first."},
+    "fw_bad_uf2": {"zh": "这个文件不是有效的 UF2（每一块都必须是 512 字节且带正确的标志）。", "en": "This is not a valid UF2 (every block must be 512 bytes with the right magics)."},
+    "fw_uf2_progress": {"zh": "写入 {i} / {n} 块…", "en": "Writing block {i} of {n}..."},
+    "fw_uf2_copied": {"zh": "已拷贝到开发板，盘符消失即表示成功。", "en": "Copied to the board; the drive disappearing means it worked."},
+    "fw_uf2_done": {"zh": "UF2 已写入，开发板会自动重启。", "en": "UF2 written; the board reboots on its own."},
+    "uf2_csw_short": {"zh": "设备返回的状态包不完整（{n} 字节）。", "en": "The device returned a truncated status packet ({n} bytes)."},
+    "uf2_csw_bad": {"zh": "设备返回的状态包标志不对。", "en": "The device returned a status packet with a wrong signature."},
+    "uf2_csw_tag": {"zh": "状态包序号不匹配（收到 {got}，应为 {want}）。", "en": "Status packet tag mismatch (got {got}, expected {want})."},
+    "uf2_not_aligned": {"zh": "数据长度不是 512 字节的整数倍。", "en": "The data is not a whole number of 512 byte blocks."},
+    "uf2_write_status": {"zh": "写入被设备拒绝（状态 0x{status:02X}）。", "en": "The device refused the write (status 0x{status:02X})."},
+    "uf2_mount_gone": {"zh": "开发板的盘符已经消失了。", "en": "The board's drive has already disappeared."},
     "fw_add_file": {"zh": "再添加一个文件（多文件刷写）", "en": "Add another file (multi-image flashing)"},
     "fw_clear_files": {"zh": "清空列表", "en": "Clear list"},
     "fw_guess_layout": {"zh": "按文件名自动填偏移", "en": "Fill offsets from file names"},
@@ -481,7 +500,7 @@ STRINGS.update({
     "fw_offset": {"zh": "偏移", "en": "Offset"},
     "fw_remove": {"zh": "移除", "en": "Remove"},
     "fw_multi_hint": {
-        "zh": "ESP32-S3 需要三个文件写在不同位置：bootloader → 0x0、分区表 → 0x8000、固件 → 0x10000。"
+        "zh": "ESP32-S3 需要三个文件写在不同位置：bootloader -> 0x0、分区表 -> 0x8000、固件 -> 0x10000。"
              "只刷固件到 0x0 会让板子把固件当 bootloader 加载，起不来、灯也不亮（灯由固件驱动）。",
         "en": "An ESP32-S3 needs three images at different offsets: bootloader at 0x0, partition table at 0x8000, firmware at 0x10000. "
              "Writing only the firmware at 0x0 makes the chip load it as a bootloader, so nothing runs and the LED stays dark (firmware drives the LED).",

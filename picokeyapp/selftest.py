@@ -17,6 +17,7 @@ import struct
 import time
 
 from .i18n import t
+from . import uf2write
 
 # From the defining module rather than the package: the package __init__ is a
 # separate file, and a partial upload that leaves it behind would turn the
@@ -285,6 +286,64 @@ _NEEDS_CTAP = ("btn_wink", "btn_test_presence",
                # and leaving these enabled on the CCID channel produces an error
                # that looks like a bug rather than a wrong channel.
                "btn_toggle_always_uv", "btn_set_min_pin")
+
+
+# Project root: selftest.py lives in picokeyapp/, main.py one level up.
+_SELFTEST_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _check_font_coverage() -> list:
+    """The bundled font must be able to draw every glyph the UI can show.
+
+    The font is shipped inside the APK, so a glyph it lacks is not rendered at
+    all - it becomes a tofu box, and on a screen full of warnings that is worse
+    than a plain ASCII label because it looks like decoration. The subset is
+    built from the source files, so this only breaks when someone edits the
+    strings afterwards without rebuilding it (or drops in a different font).
+    """
+    out = []
+    try:
+        from fontTools.ttLib import TTFont
+    except Exception:
+        out.append(_check("the font can be inspected", False,
+                          "fontTools is not available here"))
+        return out
+
+    font_path = os.path.join(_SELFTEST_ROOT, "assets", "fonts",
+                             "NotoSansSC-Regular-subset.ttf")
+    if not os.path.exists(font_path):
+        out.append(_check("the bundled font is present", False, font_path))
+        return out
+
+    cmap = TTFont(font_path).getBestCmap()
+    shown = set()
+    for name in ("main.py", "picokeyapp/i18n.py"):
+        path = os.path.join(_SELFTEST_ROOT, name)
+        if os.path.exists(path):
+            shown |= set(open(path, encoding="utf-8").read())
+
+    missing = sorted(c for c in shown
+                     if ord(c) > 0x2000 and ord(c) not in cmap)
+    out.append(_check("every shown glyph exists in the bundled font",
+                      not missing,
+                      "" if not missing else
+                      "not drawable: " + "".join(missing[:40])))
+
+    size = os.path.getsize(font_path)
+    out.append(_check("the bundled font stays small enough to ship",
+                      size < 900_000,
+                      f"{size} bytes"))
+    return out
+
+
+def _check_row_height() -> list:
+    """Rows must grow for a wrapped label instead of clipping it."""
+    src = open(os.path.join(_SELFTEST_ROOT, "main.py"), encoding="utf-8").read()
+    out = []
+    out.append(_check("field rows size themselves to their text",
+                      "height: self.minimum_height" in src,
+                      "a fixed row height clips a wrapped English label"))
+    return out
 
 
 def _check_official_engine():
@@ -599,6 +658,253 @@ def _check_reload_note():
 
     return lines
 
+
+def _mk_uf2(n: int) -> bytes:
+    """n well-formed 512 byte UF2 blocks.
+
+    The block number is stamped into each block. Identical blocks would make
+    the sequence invisible: writing them back to front produced a byte stream
+    that compared equal to the original, so a genuine ordering bug passed this
+    suite unnoticed.
+    """
+    from . import flasher
+    out = bytearray()
+    for i in range(n):
+        blk = bytearray(512)
+        struct.pack_into("<I", blk, 0, flasher.UF2_MAGIC_START0)
+        struct.pack_into("<I", blk, 4, flasher.UF2_MAGIC_START1)
+        struct.pack_into("<I", blk, 8, i)          # makes each block unique
+        struct.pack_into("<I", blk, 508, flasher.UF2_MAGIC_END)
+        out += blk
+    return bytes(out)
+
+
+class _BotDrive:
+    """A fake BOOTSEL drive that speaks Bulk-Only Transport.
+
+    `skip_csw` holds the block indices whose status packet never arrives -
+    which is exactly what a real board does on its last block, because it
+    reboots before replying.
+    """
+
+    def __init__(self, skip_csw=()):
+        self.skip_csw = set(skip_csw)
+        self.cbws = []
+        self.payloads = []
+        self._tag = None
+        self._lba = None
+
+    def write(self, data, timeout=None):
+        b = bytes(data)
+        if len(b) == 31 and b[:4] == b"USBC":
+            self._tag = struct.unpack_from("<I", b, 4)[0]
+            # CBW layout: sig(4) tag(4) len(4) flags(1) lun(1) cblen(1) = 15,
+            # so the CDB - and therefore the opcode - starts at byte 15.
+            if b[15] == uf2write.SCSI_WRITE_10:
+                self._lba = struct.unpack_from(">I", b, 17)[0]
+            else:
+                self._lba = None
+            self.cbws.append(b)
+            return len(b)
+        self.payloads.append((self._lba, b))
+        return len(b)
+
+    def read(self, length=None, timeout=None):
+        if self._lba is not None and self._lba in self.skip_csw:
+            raise OSError("no reply - the board rebooted")
+        return struct.pack("<IIIB", uf2write.CSW_SIGNATURE, self._tag or 0, 0, 0)
+
+
+def _attempt(drive, payload):
+    """Run write_uf2 without letting an exception abort the whole self-test.
+
+    A broken writer must be *reported*, not thrown out of run(): an uncaught
+    error here takes the entire report down with it, which is the same "one
+    failure at a time" behaviour this suite deliberately moved away from.
+    """
+    try:
+        return uf2write.write_uf2(drive, payload), None
+    except Exception as exc:
+        return None, exc
+
+
+def _check_uf2_write():
+    """Checks the direct UF2 download (RP2040 / RP2350, no mounted drive).
+
+    These boards are usually flashed by copying a file onto a USB drive.
+    Phones often cannot mount that drive, so the app speaks USB mass storage
+    itself. Everything here runs against a fake drive, so the wire format is
+    what is being checked rather than any particular board.
+    """
+    lines = ["UF2 direct write (RP2040 / RP2350):"]
+    data = _mk_uf2(4)
+
+    drive = _BotDrive()
+    result, err = _attempt(drive, data)
+    ok = err is None and result is not None
+    lines.append(_check("a well-formed UF2 is written without error", ok,
+                        "" if ok else f"write_uf2 raised: {err}"))
+
+    signed = bool(drive.cbws) and all(
+        len(c) == 31 and c[:4] == b"USBC" for c in drive.cbws)
+    lines.append(_check("every command goes out inside a signed 31 byte CBW",
+                        signed,
+                        "" if signed else
+                        f"{len(drive.cbws)} wrapper(s), all signed={signed}"))
+
+    writes = [c for c in drive.cbws if c[15] == uf2write.SCSI_WRITE_10]
+    lines.append(_check("one WRITE(10) per UF2 block", len(writes) == 4,
+                        "" if len(writes) == 4
+                        else f"WRITE(10) went out {len(writes)}x, expected 4"))
+
+    lbas = [lba for lba, _ in drive.payloads]
+    lines.append(_check("blocks are written one per command, from LBA 0 up",
+                        lbas == [0, 1, 2, 3],
+                        "" if lbas == [0, 1, 2, 3]
+                        else f"LBA order was {lbas}"))
+
+    joined = b"".join(p for _, p in drive.payloads)
+    lines.append(_check("the bytes on the wire are the UF2 itself",
+                        joined == data,
+                        "" if joined == data else "payload differs from the file"))
+
+    lines.append(_check("a normal write reports the board answered",
+                        ok and result["final_csw"] is True,
+                        "" if ok and result["final_csw"] is True
+                        else "final_csw should be true when nothing is skipped"))
+
+    # The board reboots on the final block, before its status packet can be
+    # read. That is success, and must not be turned into an error.
+    last = _BotDrive(skip_csw={3})
+    res_last, err_last = _attempt(last, data)
+    ok_last = (err_last is None and res_last is not None
+               and res_last["final_csw"] is False and len(last.payloads) == 4)
+    lines.append(_check("a missing reply on the last block counts as success",
+                        ok_last,
+                        "" if ok_last else
+                        f"last block was treated as a failure ({err_last})"))
+
+    # The same silence anywhere else is a real fault and must surface.
+    mid = _BotDrive(skip_csw={1})
+    _, err_mid = _attempt(mid, data)
+    lines.append(_check("a missing reply mid-way is still an error",
+                        err_mid is not None,
+                        "" if err_mid is not None
+                        else "silence on block 1 was swallowed"))
+
+    # A truncated file would silently write a partial image.
+    _, err_ragged = _attempt(_BotDrive(), data + b"\x00" * 7)
+    lines.append(_check("a file that is not a whole number of blocks is "
+                        "refused", err_ragged is not None,
+                        "" if err_ragged is not None
+                        else "a ragged UF2 was accepted"))
+
+    # Copying onto an already mounted drive: the file must reach the disk,
+    # not just Python's buffer, before the board is unplugged.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        target = uf2write.write_uf2_mounted(tmp, data)
+        same = io.open(target, "rb").read() == data
+    lines.append(_check("copying onto a mounted drive writes the file",
+                        same,
+                        "" if same else "the copy did not match the source"))
+
+    gone = False
+    try:
+        uf2write.write_uf2_mounted("/nonexistent/picokey-selftest", data)
+    except Exception:
+        gone = True
+    lines.append(_check("a vanished mount point is reported, not ignored",
+                        gone,
+                        "" if gone
+                        else "writing to a missing directory 'succeeded'"))
+
+    return lines
+
+
+def _check_uf2_web():
+    """Checks the WebUSB UF2 path in the single-file web page.
+
+    The page used to tell people a browser simply cannot write a UF2. It can:
+    a BOOTSEL board is a mass-storage device and Bulk-Only Transport works
+    over WebUSB. What the page cannot do is force a browser to hand over a
+    protected interface, so that case has to be reported honestly rather than
+    surfacing as a bare error.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))   # .../picokeyapp
+    root = os.path.dirname(here)                        # project root
+    path = os.path.join(root, "picokey-commissioner.html")
+    if not os.path.exists(path):
+        return ["  [skip] UF2 write in the web page (source not available "
+                "in a built app)"]
+    src = io.open(path, encoding="utf-8").read()
+    lines = ["UF2 write in the web page:"]
+
+    wired = ('id="btnUf2" onclick="doWriteUf2()"' in src
+             and re.search(r"^\s*async function doWriteUf2\(\)", src, re.M)
+             is not None)
+    lines.append(_check("the UF2 button is wired to a handler", wired,
+                        "" if wired else "btnUf2 has no doWriteUf2() to call"))
+
+    # Class 0x08 only. Matching any interface would happily try to speak SCSI
+    # to a CDC port and fail in a way that says nothing.
+    msc = ("alt.interfaceClass !== 0x08" in src
+           and "function pickMscInterface" in src)
+    lines.append(_check("only a mass-storage interface is used", msc,
+                        "" if msc else
+                        "pickMscInterface does not filter on class 0x08"))
+
+    # Refusal is expected, not exceptional: browsers protect this class.
+    guarded = ("catch(e){\n      // Protected class" in src
+               or "Protected class" in src) and "t('uf2Blocked')" in src
+    lines.append(_check("a refused interface gets its own explanation", guarded,
+                        "" if guarded else
+                        "a blocked claim shows a bare error instead"))
+
+    # The board reboots before answering the last block.
+    tolerant = "i === total - 1" in src and "lastCsw = false" in src
+    lines.append(_check("the last block needs no reply", tolerant,
+                        "" if tolerant else
+                        "a missing reply on the final block becomes a failure"))
+
+    signed = "0x43425355" in src and "0x53425355" in src
+    lines.append(_check("the wrappers carry the USBC / USBS signatures", signed,
+                        "" if signed else "CBW / CSW signatures are missing"))
+
+    # Only a UF2 may take this path; an ESP image is not a disk image.
+    kind_guard = "fwKind !== 'uf2'" in src or 'fwKind !== \"uf2\"' in src
+    lines.append(_check("the button only accepts a UF2 image", kind_guard,
+                        "" if kind_guard else
+                        "any picked file could be pushed as a UF2"))
+
+    # The handler has to read the variables this page actually has. Writing it
+    # against a name that does not exist throws a ReferenceError the moment the
+    # button is pressed, which looks like "nothing happened".
+    start = src.index("async function doWriteUf2()")
+    body = src[start:src.index("\nfunction ", start)] if "\nfunction " in src[start:] \
+        else src[start:start + 4000]
+    uses_real = "fwData" in body and "fwBytes" not in body
+    lines.append(_check("the handler reads the picked image by its real name",
+                        uses_real,
+                        "" if uses_real else
+                        "doWriteUf2 refers to a variable that does not exist"))
+    declared = "let fwKind = null;" in src
+    lines.append(_check("the image kind is kept where the button can see it",
+                        declared,
+                        "" if declared else
+                        "fwKind is never declared: the guard cannot work"))
+
+    # Every key, in both dictionaries - one language missing a key logs an
+    # empty line at exactly the moment something went wrong.
+    keys = ["btnUf2", "hintUf2", "uf2NeedFile", "uf2NoMsc", "uf2NoMscBody",
+            "uf2Using", "uf2Blocked", "uf2BlockedBody", "uf2Writing",
+            "uf2LastNoReply", "uf2Done", "uf2DoneBody", "uf2Failed",
+            "mUf2Title"]
+    thin = [k for k in keys if src.count("    " + k + ':"') != 2]
+    lines.append(_check("every new string exists in both languages", not thin,
+                        "" if not thin else "missing from one dictionary: "
+                                            + ", ".join(thin)))
+    return lines
 
 
 def _check_no_hang_no_false_alarm():
@@ -962,6 +1268,27 @@ def _check_ins_table() -> list:
     out.append(_check("INS 0x1D is not used at all",
                       re.search(r"self\.send\(0x1D", src) is None,
                       "0x1D does not exist in the upstream command table"))
+
+    # The on-screen text must not contradict the code. It once did: the probe
+    # footer told the operator to use INS 1D for secure boot while the code
+    # sent 1C/P1=02, and the difference matters most on the one irreversible
+    # action this app can perform.
+    try:
+        from . import i18n
+        footer = i18n.t("probe_footer")
+    except Exception as exc:                       # pragma: no cover
+        footer = ""
+        out.append(_check("probe_footer is reachable", False, str(exc)))
+
+    # Counted, not searched with a literal: this very check contains the
+    # string it looks for, so a plain "in" test would always pass.
+    out.append(_check("probe_footer agrees with the code (says INS 1C, P1=02)",
+                      "INS 1C" in footer and "P1=02" in footer
+                      and footer.count("INS 1D") == 1,
+                      "footer and implementation disagree on the command"))
+    out.append(_check("probe_footer mentions 1D once, as a does-not-exist warning",
+                      footer.count("1D") == 1,
+                      "1D should appear exactly once"))
     return out
 
 
@@ -978,7 +1305,8 @@ def run() -> str:
     # import that actually raises is a missing module.
     here = os.path.dirname(os.path.abspath(__file__))
     _MAIN_IMPORTS = ["cbor_mini", "ccid", "ctap", "ctapcfg", "detect",
-                     "flasher", "fonts", "i18n", "usbhost", "uvcrypto", "saf"]
+                     "flasher", "fonts", "i18n", "usbhost", "uvcrypto", "saf",
+                     "uf2write"]
     gone = []
     for m in _MAIN_IMPORTS:
         try:
@@ -1893,8 +2221,14 @@ def run() -> str:
     lines.extend(_check_official_engine())
     lines.extend(_check_raw_listener())
     lines.extend(_check_reload_note())
+    lines.append("")
+    lines.extend(_check_uf2_write())
+    lines.extend(_check_uf2_web())
     lines.extend(_check_dict_quotes())
     lines.extend(_check_no_hang_no_false_alarm())
+    lines.append("")
+    lines.extend(_check_font_coverage())
+    lines.extend(_check_row_height())
 
     lines.append("")
     if _FAILURES:
