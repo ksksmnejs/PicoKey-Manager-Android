@@ -260,6 +260,26 @@ class FakeFidoKey:
 _FAILURES = []
 
 
+def _src(obj):
+    """Source text of ``obj``, or None in a build that ships no .py files.
+
+    An APK carries byte-compiled modules only, so ``inspect.getsource`` raises
+    OSError there. Checks that read source text have to skip in that case: the
+    same code that passes in the source tree cannot be inspected once packed,
+    and raising made the whole run abort with "could not get source code".
+    """
+    try:
+        import inspect
+        return inspect.getsource(obj)
+    except Exception:
+        return None
+
+
+def _skipped(label, why):
+    """Record a check that cannot run in this build, without failing it."""
+    return f"  [--] {label} - {why}"
+
+
 def _check(label, condition, detail=""):
     """Record one assertion without aborting the run.
 
@@ -343,6 +363,86 @@ def _check_row_height() -> list:
     out.append(_check("field rows size themselves to their text",
                       "height: self.minimum_height" in src,
                       "a fixed row height clips a wrapped English label"))
+    return out
+
+
+def _check_vendor_screen() -> list:
+    """The credential-policy page must be complete, not just drawn.
+
+    This screen once shipped with its full layout and no handlers at all: the
+    buttons were there, tapped fine, and every one of them raised AttributeError
+    - which on a phone is a crash back to the launcher the moment the page is
+    used. A layout-only page passes every check that looks at the markup, so
+    these look at the wiring instead.
+    """
+    root = _SELFTEST_ROOT
+    try:
+        src = open(os.path.join(root, "main.py"), encoding="utf-8").read()
+    except OSError:
+        return []
+
+    # The KV block for the vendor page. The opening `"""` is *after* the
+    # assignment, so slicing from the name to the next quote yields an empty
+    # string - and every check below then passes on nothing, which is worse
+    # than failing. The block is therefore required to be non-trivial.
+    head = src.find("KV_VENDOR")
+    open_q = src.find('"""', head) if head >= 0 else -1
+    end = src.find('"""', open_q + 3) if open_q >= 0 else -1
+    kv = src[open_q + 3:end] if 0 <= open_q < end else ""
+    if len(kv) < 100:
+        return [_check("the vendor page layout can be inspected", False,
+                       "KV_VENDOR is missing or empty")]
+
+    out = []
+
+    # Every on_release: app.something() must name a method that exists.
+    called = sorted(set(re.findall(r"on_release:\s*app\.(\w+)\(", kv)))
+    missing = [name for name in called
+               if not re.search(r"^\s{4}def %s\(" % re.escape(name),
+                                src, re.M)]
+    out.append(_check("every vendor button has a handler",
+                      bool(called) and not missing,
+                      "" if not missing else "no method for: " + ", ".join(missing)
+                      if missing else "no buttons were found in the layout"))
+
+    # Every @@key@@ must exist in the dictionaries, or the label shows the raw
+    # placeholder.
+    try:
+        from . import i18n
+        keys = sorted(set(re.findall(r"@@(\w+)@@", kv)))
+        absent = [k for k in keys
+                  if not isinstance(i18n.STRINGS.get(k), dict)
+                  or "zh" not in i18n.STRINGS[k]
+                  or "en" not in i18n.STRINGS[k]]
+    except Exception:
+        keys, absent = [], []
+    out.append(_check("every vendor label exists in both languages",
+                      bool(keys) and not absent,
+                      "" if not absent else "missing: " + ", ".join(absent)))
+
+    # Global switches are toggles: saying "on" would be a lie.
+    out.append(_check("the global switches are described as toggles",
+                      "toggle_nork" in src and "toggle_mcuv" in src,
+                      "the switches no longer call the firmware toggles"))
+
+    # The firmware takes exactly one identifier. Choosing one silently would
+    # apply an irreversible policy to a different credential.
+    both = 'if cred_raw and slot_raw:' in src
+    out.append(_check("naming both a slot and a credential id is refused",
+                      both,
+                      "both fields filled picks one silently, so a revoke "
+                      "can hit the wrong credential"))
+
+    # Revoking is irreversible, so it must be gated on a typed word.
+    out.append(_check("revoke asks for a typed confirmation",
+                      'typed_word="REVOKE"' in src,
+                      "an irreversible revoke runs on a single tap"))
+
+    # The PIN token authorises everything below; without it the device answers
+    # PIN_AUTH_INVALID, which reads as "unsupported" rather than "no token".
+    out.append(_check("policy commands require a PIN token first",
+                      "_vendor_token()" in src and "vendor_auth" in src,
+                      "a missing token would surface as an unsupported device"))
     return out
 
 
@@ -1200,8 +1300,13 @@ def _check_uv_config() -> list:
                 body = bytes([sub])
                 if C.CFG_PARAM_SUBCOMMAND_PARAMS in req:
                     body += dumps(req[C.CFG_PARAM_SUBCOMMAND_PARAMS])
+                # src/fido/cbor_config.c builds the payload as
+                # `memset(verify_payload, 0xff, 32)` then 0x0d, the subcommand
+                # and the raw sub-parameters. Leaving the filler out is what
+                # makes a config change come back as CTAP2_ERR_PIN_AUTH_INVALID,
+                # which reads as "this device has no such feature".
                 want = U.protocol1_authenticate(
-                    self.token, bytes([C.CMD_CONFIG]) + body)
+                    self.token, b"\xff" * 32 + bytes([C.CMD_CONFIG]) + body)
                 if req[C.CFG_PARAM_AUTH_PARAM] != want:
                     return 0x31, b""
                 if sub == C.CFG_SUB_TOGGLE_ALWAYS_UV:
@@ -1363,7 +1468,371 @@ def _check_ins_table() -> list:
     return out
 
 
-def run() -> str:
+def _check_oath() -> list:
+    """OATH, driven against a fake device that enforces the real rules.
+
+    Nothing here is verifiable without a device, and the interesting failures
+    are quiet ones: a list that silently drops entries past the first chunk, a
+    HOTP counter that never advances, or a code that happens to look right
+    because both sides made the same mistake. The fake holds real secrets and
+    computes its own HMAC, so the codes the client reports can be compared
+    against an independent local calculation.
+    """
+    from . import oath as O
+    from .oathfake import FakeOathDevice
+
+    out = []
+    dev = FakeOathDevice(max_chunk=2)
+    app = O.OathApp(dev)
+    app.select()
+
+    # -- listing past the first chunk. The device hands back one response per
+    #    chunk and the client has to keep asking; stopping early loses
+    #    credentials without any error.
+    names = ["alpha", "beta", "gamma", "delta", "epsilon"]
+    for n in names:
+        app.put(n, bytes(range(20)))
+    got = [e["name"] for e in app.list()]
+    out.append(_check("listing collects every entry across chunk boundaries",
+                      sorted(got) == sorted(names),
+                      f"asked for {sorted(names)}, got {sorted(got)}"))
+
+    # -- TOTP against an independent calculation. Both sides derive from the
+    #    same secret, so a mismatch means the write or the encode was wrong.
+    secret = bytes(range(20))
+    ts = 1700000000
+    app.put("totp", secret)
+    code, _ = app.calculate("totp", timestamp=ts)
+    want = O.totp_local(secret, timestamp=ts)
+    out.append(_check("a TOTP code matches an independent calculation",
+                      code == want, f"device {code}, local {want}"))
+
+    totp_entry = [e for e in app.list() if e["name"] == "totp"]
+    out.append(_check("a stored TOTP is listed with its type",
+                      bool(totp_entry) and totp_entry[0]["type"] == "TOTP",
+                      "it is missing from the list entirely"
+                      if not totp_entry else totp_entry[0]["type"]))
+
+    # -- HOTP: the counter must move forward between calls
+    app.put("hotp", secret, kind=O.OATH_TYPE_HOTP)
+    c1, _ = app.calculate("hotp")
+    c2, _ = app.calculate("hotp")
+    out.append(_check("HOTP advances the counter between two calls",
+                      c1 != c2, f"both calls returned {c1}"))
+    hotp_entry = [e for e in app.list() if e["name"] == "hotp"]
+    out.append(_check("a stored HOTP is listed with its type",
+                      bool(hotp_entry) and hotp_entry[0]["type"] == "HOTP",
+                      "it is missing from the list entirely"
+                      if not hotp_entry else hotp_entry[0]["type"]))
+
+    # -- rename must move the secret, not copy it
+    before = dev.creds["alpha"]["key"]
+    app.rename("alpha", "alpha2")
+    moved = (dev.creds.get("alpha2", {}).get("key") == before
+             and "alpha" not in dev.creds)
+    out.append(_check("renaming moves the secret instead of copying it",
+                      moved, "the old name still holds a secret"))
+
+    app.delete("beta")
+    out.append(_check("deleting removes the entry", "beta" not in dev.creds))
+
+    # -- the password gate: a wrong one must be refused. This runs after the
+    #    mutating checks because setting a code locks every later command
+    #    until it is validated.
+    app.set_code(b"pw")
+    dev.validated = False
+    app.select()          # the challenge is only published on SELECT
+    out.append(_check("the device asks for the password once one is set",
+                      app.code_required,
+                      "no challenge published, so nothing would be asked"))
+    ok = app.validate_and_check(b"bad")
+    out.append(_check("a wrong password is refused", ok is False,
+                      "it was accepted"))
+
+    app.reset()
+    out.append(_check("resetting clears every credential",
+                      not dev.creds, f"left over: {list(dev.creds)}"))
+    return out
+
+
+def _check_mgmt() -> list:
+    """Device configuration, against a fake that parses the real blob.
+
+    The config blob is positional, so a client that writes the fields in the
+    wrong order produces something the device accepts and then behaves
+    strangely with. A malformed blob has to be refused rather than applied,
+    because a bad write here can disable every interface at once.
+    """
+    from . import mgmt as M
+    from .mgmtfake import FakeMgmtDevice
+
+    out = []
+    dev = FakeMgmtDevice()
+    app = M.ManagementApp(dev)
+
+    info = app.select()
+    out.append(_check("selecting the management app reports a version",
+                      "8." in info, f"got {info!r}"))
+
+    cfg = app.read_config()
+    out.append(_check("reading the config returns the enabled interfaces",
+                      "usb_enabled" in cfg, f"keys: {sorted(cfg)}"))
+    out.append(_check("the serial number comes back as a number",
+                      isinstance(cfg.get("serial"), int),
+                      f"serial={cfg.get('serial')!r}"))
+
+    # -- write back what was read: the device must accept its own output.
+    #    `enabled` is what the device applied, `caps` is what it supports;
+    #    comparing against the wrong one would pass no matter what.
+    try:
+        app.set_usb_enabled(cfg["usb_enabled"])
+        roundtrip = dev.enabled == cfg["usb_enabled"]
+        detail = f"device holds {dev.enabled}, wrote {cfg['usb_enabled']}"
+    except Exception as exc:
+        roundtrip = False
+        detail = f"{type(exc).__name__}: {exc}"
+    out.append(_check("writing back the config it just read is accepted",
+                      roundtrip, detail))
+
+    # -- the length prefix has to agree with what follows. The firmware
+    #    refuses a mismatched one with SW_WRONG_DATA rather than storing
+    #    garbage, and applying a bad config can disable every interface at
+    #    once, so "refused" is the only safe answer.
+    _, sw = app._tx(M.INS_WRITE_CONFIG, b"\x05\x01")
+    out.append(_check("a config blob whose length prefix disagrees "
+                      "is refused", sw != 0x9000,
+                      f"device answered 0x{sw:04X}"))
+
+    # -- the 255-byte ceiling is a client-side guard: sending more would be
+    #    rejected by the device anyway, but the prefix itself cannot carry a
+    #    length that large.
+    refused = False
+    try:
+        app.write_config(b"\x01" * 256)
+    except M.MgmtError:
+        refused = True
+    except Exception:
+        refused = False
+    out.append(_check("an oversized config is refused before it is sent",
+                      refused, "" if refused else "it went to the device"))
+
+    # -- factory reset is reachable and reported
+    try:
+        app.factory_reset()
+        out.append(_check("factory reset runs", dev.reset_done,
+                          "" if dev.reset_done else "the device did not reset"))
+    except Exception as exc:
+        out.append(_check("factory reset runs", False,
+                          f"{type(exc).__name__}: {exc}"))
+    return out
+
+
+def _check_vendor() -> list:
+    """Credential policies and key backup, driven against a fake device.
+
+    These commands are destructive and their failures are all reported the
+    same way, so a client bug is indistinguishable from a device that simply
+    said no. Running the real client against a fake that applies the
+    firmware's own rules separates the two: a wrong auth payload, an
+    out-of-order map, or addressing a credential by the wrong form all fail
+    here instead of on the hardware.
+    """
+    out = []
+    try:
+        from .vendorfake import FakeVendor
+        from .vendor import VendorApp, payload_for_auth, _ordered, VendorError
+        from . import cbor_mini
+    except Exception as exc:
+        out.append(_check("the vendor module imports", False, str(exc)))
+        return out
+
+    CRED_ID = bytes(range(42))          # CRED_RESIDENT_LEN in the firmware
+
+    # -- auth payload layout: the HMAC covers filler, command, subcommand and
+    #    the exact encoded subparameters.
+    sub = _ordered([(1, 0x52B41F53590D3)])
+    payload = payload_for_auth(sub)
+    layout_ok = (payload[:32] == b"\xff" * 32
+                 and payload[32] == 0x0D and payload[33] == 0xFF
+                 and payload[34:] == cbor_mini.dumps(sub))
+    out.append(_check(
+        "the config auth payload matches what the firmware hashes",
+        layout_ok,
+        "" if layout_ok else "filler/command/subparams layout is off"))
+
+    # -- keys must come out ascending or the firmware refuses the map
+    order_ok = list(_ordered([(5, 1), (1, 2), (3, 3)])) == [1, 3, 5]
+    out.append(_check("config maps go out with ascending keys", order_ok,
+                      "" if order_ok else
+                      "the firmware refuses a map whose keys go backwards"))
+
+    dev = FakeVendor(pin="123456")
+    app = VendorApp(dev)
+    try:
+        token = app.get_pin_token("123456")
+        out.append(_check("a PIN token with the ACFG permission is obtained",
+                          token == dev.pin_token, ""))
+    except Exception as exc:
+        out.append(_check("a PIN token with the ACFG permission is obtained",
+                          False, str(exc)))
+        return out
+
+    # -- a wrong PIN must be refused, not silently accepted
+    bad = FakeVendor(pin="999999")
+    rejected = False
+    try:
+        VendorApp(bad).get_pin_token("123456")
+    except VendorError:
+        rejected = True
+    except Exception:
+        rejected = False
+    out.append(_check("a wrong PIN is refused", rejected,
+                      "" if rejected else "a wrong PIN still produced a token"))
+
+    # -- the ACFG bit is what makes the token usable for config. Asking for a
+    #    token without it must leave every later command refused: otherwise the
+    #    permissions field is being read out of the wrong key, the request
+    #    silently carries no permissions, and the firmware would still refuse -
+    #    so the fake has to refuse too or the client looks fine on the bench
+    #    and fails on the device.
+    no_perm = FakeVendor(pin="123456")
+    try:
+        VendorApp(no_perm).get_pin_token("123456", permissions=0)
+        denied = False
+        try:
+            VendorApp(no_perm).toggle_nork(
+                pin_token=no_perm.pin_token)
+        except VendorError:
+            denied = True
+    except Exception as exc:                      # pragma: no cover
+        denied = False
+        out.append(_check("a token without ACFG leaves config refused",
+                          False, f"{type(exc).__name__}: {exc}"))
+        return out
+    out.append(_check("a token without ACFG leaves config refused", denied,
+                      "" if denied else
+                      "config succeeded under a token with no ACFG permission; "
+                      "the permissions field is probably read from the wrong "
+                      "key"))
+
+    # -- toggles flip, so applying one twice returns to the start. Wrapped so
+    #    that a refusal is reported as a failed check: an unhandled raise here
+    #    would end the group and leave the addressing checks below unrun, and
+    #    a permission bug is exactly the kind that refuses everything.
+    try:
+        app.toggle_nork()
+        after_one = dev.opts
+        app.toggle_nork()
+        toggles = (after_one != 0 and dev.opts == 0)
+        why = "applying it twice should restore the original state"
+    except VendorError as exc:
+        toggles, why = False, f"the device refused the toggle: {exc}"
+    out.append(_check("the resident-key option is a toggle", toggles,
+                      "" if toggles else why))
+
+    # -- addressing forms. The slot form carries the timestamp as a four-byte
+    #    string and the id form carries it as an integer; swapping them is the
+    #    easy mistake and the device still answers, just for the wrong entry.
+    app.expire_credential(1700000000, slot=2)
+    out.append(_check("expiring by slot reaches that slot",
+                      dev.expiries.get(2) == 1700000000,
+                      f"got {dev.expiries}"))
+
+    dev2 = FakeVendor(pin="123456")
+    VendorApp(dev2).get_pin_token("123456")
+    app2 = VendorApp(dev2)
+    app2._pin_token = app._pin_token
+    app2.expire_credential(1700000000, cred_id=CRED_ID)
+    out.append(_check("expiring by credential id reaches that credential",
+                      dev2.expiries.get(CRED_ID) == 1700000000,
+                      f"got {dev2.expiries}"))
+
+    app.require_button(True, cred_id=CRED_ID)
+    app.require_button(False, slot=1)
+    out.append(_check("the button policy accepts both addressing forms",
+                      dev.buttons.get(CRED_ID) is True
+                      and dev.buttons.get(1) is False,
+                      f"got {dev.buttons}"))
+
+    app.revoke_credential(slot=3)
+    app.revoke_credential(cred_id=CRED_ID)
+    out.append(_check("revoking accepts a slot and a credential id",
+                      len(dev.revoked) == 2, f"got {dev.revoked}"))
+
+    app.set_pin_policy(8)
+    out.append(_check("the minimum PIN length policy is applied",
+                      dev.pin_policy == 8, f"got {dev.pin_policy}"))
+
+    # -- a policy must not run without a token
+    no_token = VendorApp(FakeVendor())
+    refused = False
+    try:
+        no_token.toggle_nork()
+    except VendorError:
+        refused = True
+    except Exception:
+        # A crash is not a refusal. Counting any exception as "rejected" would
+        # let a genuine bug - say a None token reaching the HMAC - pass as if
+        # the guard were working.
+        refused = False
+    out.append(_check("a policy refuses to run without a PIN token", refused,
+                      "" if refused else
+                      "it went out unauthenticated, or failed for some other "
+                      "reason than the missing-token guard"))
+
+    # -- backup: agree, unlock, export, import
+    dev3 = FakeVendor(keydev=bytes(range(32)))
+    app3 = VendorApp(dev3)
+    app3.mse_agree()
+    out.append(_check("the backup key agreement completes",
+                      dev3._mse_key is not None, ""))
+    app3.unlock(bytes(range(32)))
+    out.append(_check("unlocking accepts the key value", dev3.unlocked, ""))
+
+    blob = app3.backup_export()
+    out.append(_check("the exported backup is the expected size",
+                      len(blob) == 60, f"{len(blob)} bytes"))
+
+    new_blob = bytes([0xAA]) * 60
+    app3.backup_import(new_blob)
+    out.append(_check("an imported backup is written to the device",
+                      dev3.blob == new_blob, ""))
+
+    # -- exporting before unlocking must fail rather than return a blank blob
+    dev4 = FakeVendor()
+    app4 = VendorApp(dev4)
+    app4.mse_agree()
+    blocked = False
+    try:
+        app4.backup_export()
+    except Exception:
+        blocked = True
+    out.append(_check("exporting a backup before unlocking is refused",
+                      blocked,
+                      "" if blocked else
+                      "it returned a blob the device had not unlocked"))
+
+    return out
+
+
+def _guarded(name: str, fn):
+    """Run one group, turning a crash into a single failed check.
+
+    A group that raises used to abort the whole run, so everything after it
+    stayed unknown. That matters most while a bug is being introduced on
+    purpose: one broken group would hide whether the other twenty still pass.
+    """
+    try:
+        return fn()
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc().strip().splitlines()
+        last = tb[-1].strip() if tb else "unknown error"
+        _FAILURES.append(f"the {name} checks crashed: {last}")
+        return ["  [FAIL] the " + name + " checks crashed - " + last]
+
+
+def _run_body() -> str:
     import inspect
 
     # Module completeness, before anything is imported from this package: a
@@ -2144,22 +2613,32 @@ def run() -> str:
         ok_late and n_e == 1,
         f"succeeded={ok_late}, ERASE_FLASH sent {n_e}x, {detail}"))
 
-    lines.append(_check(
-        "erase-first runs on the same connection as the write",
-        "erase_first" in inspect.getsource(flasher.flash_esp32_multi)
-        and "loader.erase_flash()" in inspect.getsource(flasher.flash_esp32_multi),
-        "the erase must not open a second connection"))
+    _erase_src = _src(flasher.flash_esp32_multi)
+    if _erase_src is None:
+        lines.append(_skipped(
+            "erase-first runs on the same connection as the write",
+            "no source on disk in this build"))
+    else:
+        lines.append(_check(
+            "erase-first runs on the same connection as the write",
+            "erase_first" in _erase_src
+            and "loader.erase_flash()" in _erase_src,
+            "the erase must not open a second connection"))
 
     # f4d) flash() must clear the pipe just like erase_flash() does. It did
     # not, which is why the error surfaced during flashing while naming the
     # erase opcode - the two paths had drifted apart.
-    import inspect
-    _f_src = inspect.getsource(flasher.EspLoader.flash)
-    _f_ok = "_clean_pipe" in _f_src
-    lines.append(_check("flash() clears the pipe after a failed SPI_ATTACH",
-                        _f_ok,
-                        "" if _f_ok else
-                        "flash() carries the failed reply over to FLASH_BEGIN"))
+    _f_src = _src(flasher.EspLoader.flash)
+    if _f_src is None:
+        lines.append(_skipped(
+            "flash() clears the pipe after a failed SPI_ATTACH",
+            "no source on disk in this build"))
+    else:
+        _f_ok = "_clean_pipe" in _f_src
+        lines.append(_check("flash() clears the pipe after a failed SPI_ATTACH",
+                            _f_ok,
+                            "" if _f_ok else
+                            "flash() carries the failed reply over to FLASH_BEGIN"))
 
     # f5) A destructive command must never be retransmitted. The mismatch path
     # retries when a stale frame turns up, which is right for a read but not for
@@ -2270,37 +2749,48 @@ def run() -> str:
 
     # Rebooting in the middle of a multi-file write would drop the connection
     # with images still queued, so only the last file may carry the flag.
-    import inspect as _inspect
-    _multi_src = _inspect.getsource(flasher.flash_esp32_multi)
-    _multi_ok = "reboot=reboot and idx == total" in _multi_src
-    lines.append(_check("multi-file flashing reboots on the last file only",
-                        _multi_ok,
-                        "" if _multi_ok else
-                        "the reboot flag is not tied to the last entry"))
+    _multi_src = _src(flasher.flash_esp32_multi)
+    if _multi_src is None:
+        lines.append(_skipped(
+            "multi-file flashing reboots on the last file only",
+            "no source on disk in this build"))
+    else:
+        _multi_ok = "reboot=reboot and idx == total" in _multi_src
+        lines.append(_check("multi-file flashing reboots on the last file only",
+                            _multi_ok,
+                            "" if _multi_ok else
+                            "the reboot flag is not tied to the last entry"))
 
     lines.append("")
     lines.append("")
-    lines.extend(_check_ins_table())
-    lines.extend(_check_uv_config())
+    lines.extend(_guarded("ins", _check_ins_table))
+    lines.extend(_guarded("uv config", _check_uv_config))
+    lines.extend(_guarded("vendor", _check_vendor))
+    lines.append("")
+    lines.extend(_guarded("oath", _check_oath))
+    lines.append("")
+    lines.extend(_guarded("mgmt", _check_mgmt))
 
     lines.append("")
     lines.append("")
     lines.append(t("selftest_ui") + ":")
-    lines.extend(_check_channel_gating())
+    lines.extend(_guarded("channel gating", _check_channel_gating))
 
     lines.append("")
-    lines.extend(_check_official_engine())
-    lines.extend(_check_raw_listener())
-    lines.extend(_check_reload_note())
+    lines.extend(_guarded("official engine", _check_official_engine))
+    lines.extend(_guarded("raw listener", _check_raw_listener))
+    lines.extend(_guarded("reload note", _check_reload_note))
     lines.append("")
-    lines.extend(_check_uf2_write())
-    lines.extend(_check_uf2_web())
-    lines.extend(_check_uf2_family())
-    lines.extend(_check_dict_quotes())
-    lines.extend(_check_no_hang_no_false_alarm())
+    lines.extend(_guarded("uf2 write", _check_uf2_write))
+    lines.extend(_guarded("uf2 web", _check_uf2_web))
+    lines.extend(_guarded("uf2 family", _check_uf2_family))
+    lines.extend(_guarded("dictionary quotes", _check_dict_quotes))
+    lines.extend(_guarded("no hang", _check_no_hang_no_false_alarm))
     lines.append("")
-    lines.extend(_check_font_coverage())
-    lines.extend(_check_row_height())
+    lines.extend(_guarded("font coverage", _check_font_coverage))
+    lines.extend(_guarded("row height", _check_row_height))
+    lines.append("")
+    lines.extend(_guarded("vendor page", _check_vendor_screen))
 
     lines.append("")
     if _FAILURES:
@@ -2310,6 +2800,26 @@ def run() -> str:
     else:
         lines.append(t("selftest_passed"))
     return "\n".join(lines)
+
+
+def run() -> str:
+    """Run every check, reporting a crash as one failed check.
+
+    One unhandled exception used to abort the whole run, so the report came
+    back empty and the app logged a bare traceback. Everything after the crash
+    stayed unknown, which hid more failures than the crash itself.
+    """
+    try:
+        return _run_body()
+    except Exception:
+        import traceback
+        tb = traceback.format_exc().strip().splitlines()
+        last = tb[-1].strip() if tb else "unknown error"
+        _FAILURES.append(f"the run itself crashed: {last}")
+        head = ["  [FAIL] the run itself crashed - " + last, "",
+                "  traceback:"]
+        head += ["    " + ln.strip() for ln in tb]
+        return "\n".join(head)
 
 
 if __name__ == "__main__":
