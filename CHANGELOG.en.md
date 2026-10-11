@@ -39,6 +39,23 @@ If the build fails the job stops early and no version number is consumed.
 
 ---
 
+## [v0.4.0] - 2026-10-10
+
+### Added
+- OATH: list credentials, calculate codes (including all at once), add, delete, rename, set and clear the access code, and reset. Talks to the OATH application built into the firmware over the CCID channel.
+- Device configuration: read the model, serial number, firmware version and enabled USB interfaces, toggle them and write back, plus a factory reset behind a typed confirmation.
+- Credential policies: block resident keys, skip user verification on make-credential, revoke one credential, set an expiry, require a button press, and set a minimum PIN length. Every command needs an authorisation token obtained with the device PIN first.
+- Key backup: export the device-sealed backup and show it as hex; import a previously exported backup (the device waits for a button press).
+
+### Fixed
+- `alwaysUv` and the minimum PIN length computed their authorisation tag without a fixed padding block that both the firmware and the published spec require, so both most likely always failed — and failed as "unsupported", which sends the investigation the wrong way. Corrected against the firmware source.
+- The credential-policy page previously had its full layout and no back-end logic at all, so tapping any button crashed. All nine actions are now implemented, with a self-test watching the button-to-handler wiring.
+- Filling both the slot and the credential ID no longer silently prefers one. The firmware accepts only one, and a silent choice can apply an irreversible revoke to the wrong credential.
+- The self-test read an empty slice of the screen layout, which made the "button has a handler" and "label exists in both languages" checks pass on nothing. The slice is now taken correctly and required to be non-empty.
+
+### Changed
+- The bundled font subset was rebuilt from the current strings (293 KB), fixing several characters that rendered as boxes.
+
 ## [v0.3.3] - 2026-10-05
 
 ### Fixed

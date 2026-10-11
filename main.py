@@ -406,6 +406,12 @@ ScreenManager:
         name: 'log'
     FirmwareScreen:
         name: 'firmware'
+    OathScreen:
+        name: 'oath'
+    MgmtScreen:
+        name: 'mgmt'
+    VendorScreen:
+        name: 'vendor'
 """
 
 # Firmware page. Kept separate from the device page on purpose: flashing talks
@@ -902,11 +908,311 @@ BoxLayout:
                 text: '@@btn_disconnect@@'
                 on_release: app.disconnect()
             MenuButton:
+                text: '@@btn_oath@@'
+                disabled: app.busy
+                on_release: app.go('oath')
+            MenuButton:
+                text: '@@btn_mgmt@@'
+                disabled: app.busy
+                on_release: app.go('mgmt')
+            MenuButton:
+                text: '@@btn_vendor@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.go('vendor')
+            MenuButton:
                 text: '@@btn_back_scan@@'
                 on_release: app.go('scan')
             MenuButton:
                 text: '@@btn_logs@@'
                 on_release: app.go('log')
+"""
+
+# OATH page. Talked to over the CCID channel, so it is unavailable while the
+# device is only exposing FIDO - the buttons say so rather than failing later.
+KV_OATH = """
+BoxLayout:
+    orientation: 'vertical'
+    canvas.before:
+        Color:
+            rgba: 0.071, 0.086, 0.110, 1.000
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    padding: [dp(12), dp(12) + app.top_inset, dp(12), dp(12)]
+    spacing: dp(6)
+    Label:
+        id: oath_info
+        text: app.oath_text
+        size_hint_y: None
+        height: max(dp(70), self.texture_size[1] + dp(10))
+        text_size: self.width, None
+        font_size: '14sp'
+        halign: 'left'
+        valign: 'top'
+    InfoLabel:
+        text: app.oath_hint
+    ScrollView:
+        GridLayout:
+            cols: 1
+            size_hint_y: None
+            height: self.minimum_height
+            spacing: dp(6)
+            padding: 0, dp(6)
+
+            MenuButton:
+                id: btn_oath_list
+                text: '@@btn_oath_list@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.oath_list()
+            PrimaryButton:
+                id: btn_oath_calc_all
+                text: '@@btn_oath_calc_all@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.oath_calc_all()
+
+            SectionLabel:
+                text: '@@sec_oath_add@@'
+            Row:
+                FieldLabel:
+                    text: '@@field_oath_name@@'
+                TextInput:
+                    id: oath_name
+                    multiline: False
+            Row:
+                FieldLabel:
+                    text: '@@field_oath_secret@@'
+                TextInput:
+                    id: oath_secret
+                    multiline: False
+            PrimaryButton:
+                id: btn_oath_put
+                text: '@@btn_oath_put@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.oath_put()
+            MenuButton:
+                id: btn_oath_delete
+                text: '@@btn_oath_delete@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.oath_delete()
+
+            SectionLabel:
+                text: '@@sec_oath_code@@'
+            Row:
+                FieldLabel:
+                    text: '@@field_oath_code@@'
+                TextInput:
+                    id: oath_code
+                    multiline: False
+                    password: True
+            PrimaryButton:
+                id: btn_oath_set_code
+                text: '@@btn_oath_set_code@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.oath_set_code()
+            DangerButton:
+                id: btn_oath_clear_code
+                text: '@@btn_oath_clear_code@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.oath_clear_code()
+            DangerButton:
+                id: btn_oath_reset
+                text: '@@btn_oath_reset@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.oath_reset()
+            MenuButton:
+                text: '@@btn_back_device@@'
+                on_release: app.go('device')
+            MenuButton:
+                text: '@@btn_logs@@'
+                on_release: app.go('log')
+"""
+
+# Management page. Reading the configuration is harmless; writing it and
+# factory reset are not, so those are the only two guarded by a confirm.
+KV_MGMT = """
+BoxLayout:
+    orientation: 'vertical'
+    canvas.before:
+        Color:
+            rgba: 0.071, 0.086, 0.110, 1.000
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    padding: [dp(12), dp(12) + app.top_inset, dp(12), dp(12)]
+    spacing: dp(6)
+    Label:
+        id: mgmt_info
+        text: app.mgmt_text
+        size_hint_y: None
+        height: max(dp(120), self.texture_size[1] + dp(10))
+        text_size: self.width, None
+        font_size: '14sp'
+        halign: 'left'
+        valign: 'top'
+    InfoLabel:
+        text: app.mgmt_hint
+    ScrollView:
+        GridLayout:
+            cols: 1
+            size_hint_y: None
+            height: self.minimum_height
+            spacing: dp(6)
+            padding: 0, dp(6)
+
+            MenuButton:
+                id: btn_mgmt_read
+                text: '@@btn_mgmt_read@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.mgmt_read()
+            SectionLabel:
+                text: '@@sec_mgmt_itf@@'
+            {{MGMT_ITF}}
+            PrimaryButton:
+                id: btn_mgmt_apply
+                text: '@@btn_mgmt_apply@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.mgmt_apply()
+            SectionLabel:
+                text: '@@sec_mgmt_danger@@'
+            DangerButton:
+                id: btn_mgmt_reset
+                text: '@@btn_mgmt_reset@@'
+                disabled: app.busy or app.blocked_apdu
+                on_release: app.mgmt_factory_reset()
+            MenuButton:
+                text: '@@btn_back_device@@'
+                on_release: app.go('device')
+            MenuButton:
+                text: '@@btn_logs@@'
+                on_release: app.go('log')
+"""
+
+# Credential policies and key backup. Everything here runs over the CTAP HID
+# channel and needs a PIN token, so the page is gated on blocked_ctap rather
+# than blocked_apdu like the CCID pages.
+KV_VENDOR = """
+BoxLayout:
+    orientation: 'vertical'
+    canvas.before:
+        Color:
+            rgba: 0.071, 0.086, 0.110, 1.000
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    padding: [dp(12), dp(12) + app.top_inset, dp(12), dp(12)]
+    spacing: dp(6)
+    Label:
+        id: vendor_info
+        text: app.vendor_text
+        size_hint_y: None
+        height: max(dp(90), self.texture_size[1] + dp(10))
+        text_size: self.width, None
+        font_size: '14sp'
+        halign: 'left'
+        valign: 'top'
+    InfoLabel:
+        text: app.vendor_hint
+    ScrollView:
+        GridLayout:
+            cols: 1
+            size_hint_y: None
+            height: self.minimum_height
+            spacing: dp(6)
+            padding: 0, dp(6)
+
+            InfoLabel:
+                text: '@@vendor_need_pin@@'
+            Row:
+                FieldLabel:
+                    text: '@@field_pin@@'
+                TextInput:
+                    id: vendor_pin
+                    multiline: False
+                    password: True
+            PrimaryButton:
+                id: btn_vendor_auth
+                text: '@@btn_vendor_auth@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_auth()
+            SectionLabel:
+                text: '@@sec_vendor_switches@@'
+            MenuButton:
+                id: btn_vendor_nork
+                text: '@@vendor_nork@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_nork()
+            MenuButton:
+                id: btn_vendor_mcuv
+                text: '@@vendor_mcuv@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_mcuv()
+            SectionLabel:
+                text: '@@sec_vendor_single@@'
+            Row:
+                FieldLabel:
+                    text: '@@vendor_slot@@'
+                TextInput:
+                    id: vendor_slot
+                    multiline: False
+            Row:
+                FieldLabel:
+                    text: '@@vendor_credid@@'
+                TextInput:
+                    id: vendor_credid
+                    multiline: False
+            Row:
+                FieldLabel:
+                    text: '@@vendor_expiry@@'
+                TextInput:
+                    id: vendor_expiry
+                    multiline: False
+            DangerButton:
+                id: btn_vendor_revoke
+                text: '@@btn_vendor_revoke@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_revoke()
+            MenuButton:
+                id: btn_vendor_expire
+                text: '@@btn_vendor_expire@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_expire()
+            MenuButton:
+                id: btn_vendor_button
+                text: '@@btn_vendor_button@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_button()
+            SectionLabel:
+                text: '@@sec_vendor_pinpolicy@@'
+            Row:
+                FieldLabel:
+                    text: '@@vendor_minpin@@'
+                TextInput:
+                    id: vendor_minpin
+                    multiline: False
+            PrimaryButton:
+                id: btn_vendor_pinpolicy
+                text: '@@btn_vendor_pinpolicy@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_pinpolicy()
+            SectionLabel:
+                text: '@@sec_vendor_backup@@'
+            MenuButton:
+                id: btn_vendor_export
+                text: '@@btn_vendor_export@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_export()
+            MenuButton:
+                id: btn_vendor_import
+                text: '@@btn_vendor_import@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.vendor_import()
+            InfoLabel:
+                text: '@@vendor_import_note@@'
+            InfoLabel:
+                text: '@@vendor_phrase_note@@'
+            MenuButton:
+                text: '@@btn_back_device@@'
+                on_release: app.go('device')
 """
 
 KV_LOG = """
@@ -967,7 +1273,10 @@ BoxLayout:
 _IMPORT_ERROR = None
 try:
     from picokeyapp import (ctap, ctapcfg, detect, flasher, fonts, i18n,
-                            usbhost, uf2write)
+                            mgmt, oath, usbhost, uf2write)
+    from picokeyapp.mgmt import CAP_NAMES as MGMT_CAPS, ManagementApp
+    from picokeyapp.oath import OathApp, SWError, base32_decode as oath_base32_decode
+    from picokeyapp.vendor import VendorApp, VendorError
     from picokeyapp.pk import PicoKey, PhyData, PhyLedDriver, PhyOpt, PhyUsbItf
 except Exception:
     _IMPORT_ERROR = traceback.format_exc()
@@ -977,6 +1286,17 @@ except Exception:
         def _boom(*_a, **_k):
             raise RuntimeError(name)
         return _boom
+
+    # Names used at module level below; importing them lazily would mean every
+    # handler has to guard against them being absent.
+    MGMT_CAPS = []
+    ManagementApp = OathApp = None
+    VendorApp = None
+    oath_base32_decode = None
+    class SWError(Exception):
+        pass
+    class VendorError(Exception):
+        pass
 
 # Imported from the defining module rather than the package, because the
 # package __init__ is a separate file that has to be uploaded alongside this
@@ -1020,6 +1340,18 @@ class ScanScreen(Screen):
 
 
 class DeviceScreen(Screen):
+    pass
+
+
+class OathScreen(Screen):
+    pass
+
+
+class MgmtScreen(Screen):
+    pass
+
+
+class VendorScreen(Screen):
     pass
 
 
@@ -1116,6 +1448,10 @@ class PicoKeyApp(App):
         # Multi-image flashing: a list of {"name", "data", "offset"} dicts.
         # Empty means the plain single-file path, which stays the default.
         self._fw_files = []
+        # Credential-policy page: the PIN/UV token the device issued, held in
+        # memory only, and the last exported backup blob.
+        self._vendor_pin_token = None
+        self._vendor_blob = None
         # authenticatorGetInfo of the current CTAP connection, kept so the UV
         # section can show alwaysUv without another round trip to the device.
         self._ctap_info = None
@@ -1227,14 +1563,17 @@ class PicoKeyApp(App):
         """
         def replace(match):
             name = match.group(1)
-            if name != "CURVE_GRID":
+            if name == "CURVE_GRID":
+                text = _curve_grid_kv()
+            elif name == "MGMT_ITF":
+                text = self._mgmt_itf_kv()
+            else:
                 return ""
             # indentation of the line the placeholder sits on
             head = template[:match.start()]
             indent = head[head.rfind("\n") + 1:] if "\n" in head else head
             if indent.strip():
                 indent = ""
-            text = _curve_grid_kv()
             lines = text.split("\n")
             out = [lines[0]]
             for line in lines[1:]:
@@ -1261,7 +1600,9 @@ class PicoKeyApp(App):
         """
         root = root if root is not None else self.root
         for name, template in (("scan", KV_SCAN), ("device", KV_DEVICE),
-                               ("log", KV_LOG), ("firmware", KV_FIRMWARE)):
+                               ("log", KV_LOG), ("firmware", KV_FIRMWARE),
+                               ("oath", KV_OATH), ("mgmt", KV_MGMT),
+                               ("vendor", KV_VENDOR)):
             screen = root.get_screen(name)
             old = getattr(screen, "content", None)
             if old is not None:
@@ -1388,10 +1729,519 @@ class PicoKeyApp(App):
     def go(self, name: str):
         self.root.current = name
 
+    # ---------------------------------------------------------------- OATH
+
+    def _oath(self):
+        """An OATH client over the current CCID connection.
+
+        Re-selecting on every call is deliberate: the applet publishes its
+        challenge in the SELECT answer, and that challenge is only valid for
+        the session it was issued in.
+        """
+        pk = self._require_apdu()
+        app = OathApp(pk)
+        app.select()
+        return app
+
+    def oath_list(self):
+        def work():
+            app = self._oath()
+            try:
+                return {"creds": app.list(), "locked": app.code_required}
+            except SWError:
+                # No access code set and none needed: listing still works.
+                return {"creds": app.list(), "locked": False}
+
+        def done(res):
+            creds = res["creds"]
+            self._oath_creds = creds
+            lines = [i18n.t("oath_empty")] if not creds else [
+                "%s  %s" % (c["name"], c["type"]) for c in creds]
+            self.oath_text = "\n".join(lines)
+            self.oath_hint = (i18n.t("oath_locked") if res["locked"]
+                              else i18n.t("oath_unlocked"))
+            self._done(i18n.t("oath_listed", n=len(creds)))
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def oath_calc_all(self):
+        def work():
+            return self._oath().calculate_all()
+
+        def done(rows):
+            self.oath_text = "\n".join("%s   %s" % (r["name"], r.get("otp", "—"))
+                                        for r in rows) or i18n.t("oath_empty")
+            self._done(i18n.t("oath_calculated", n=len(rows)))
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def oath_put(self):
+        ids = self.ids_of("oath")
+        name = ids["oath_name"].text.strip()
+        secret = ids["oath_secret"].text.strip()
+        if not name:
+            self.status_text = i18n.t("oath_need_name")
+            return
+        try:
+            key = oath_base32_decode(secret) if secret else b""
+        except Exception:
+            key = None
+        if key is None:
+            self.status_text = i18n.t("oath_bad_secret")
+            return
+        if not key:
+            import secrets as _secrets
+            key = _secrets.token_bytes(20)
+
+        def work():
+            self._oath().put(name, key)
+            return name
+
+        def done(_n):
+            self._done(i18n.t("oath_stored", name=name))
+            self.oath_list()
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def oath_delete(self):
+        ids = self.ids_of("oath")
+        name = ids["oath_name"].text.strip()
+        if not name:
+            self.status_text = i18n.t("oath_need_name")
+            return
+
+        def work():
+            self._oath().delete(name)
+            return name
+
+        def done(_n):
+            self._done(i18n.t("oath_deleted", name=name))
+            self.oath_list()
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def oath_set_code(self):
+        ids = self.ids_of("oath")
+        code = ids["oath_code"].text.encode("utf-8")
+        if not code:
+            self.status_text = i18n.t("oath_need_code")
+            return
+
+        def work():
+            self._oath().set_code(code)
+            return None
+
+        def done(_):
+            self._done(i18n.t("oath_code_set"))
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def oath_clear_code(self):
+        def work():
+            self._oath().set_code(b"")
+            return None
+
+        def done(_):
+            self._done(i18n.t("oath_code_cleared"))
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def oath_reset(self):
+        self._ask_confirm(i18n.t("oath_reset_title"),
+                          i18n.t("oath_reset_body"),
+                          i18n.t("oath_reset_go"),
+                          lambda _v: self._oath_reset(), typed_word="DELETE")
+
+    def _oath_reset(self):
+        def work():
+            self._oath().reset()
+            return None
+
+        def done(_):
+            self._done(i18n.t("oath_reset_done"))
+            self.oath_list()
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    # --------------------------------------------------------- management
+
+    def _mgmt(self):
+        pk = self._require_apdu()
+        app = ManagementApp(pk)
+        app.select()
+        return app
+
+    def _mgmt_itf_kv(self):
+        """One toggle per USB interface the device can expose.
+
+        Built from the capabilities reported by the last config read, so an
+        interface the device does not implement is never offered.
+        """
+        rows = []
+        for i, (mask, name) in enumerate(MGMT_CAPS):
+            rows.append("Row:")
+            rows.append("    FieldLabel:")
+            rows.append("        text: '%s'" % name)
+            rows.append("    ToggleButton:")
+            rows.append("        id: itf%d" % i)
+            rows.append("        text: '%s'" % name)
+        return "\n".join(rows)
+
+    def mgmt_read(self):
+        def work():
+            return self._mgmt().read_config()
+
+        def done(cfg):
+            self._mgmt_cfg = cfg
+            names = cfg.get("usb_enabled_names", [])
+            sup = cfg.get("usb_supported_names", [])
+            lines = [i18n.t("mgmt_version", v=cfg.get("version", "—")),
+                     i18n.t("mgmt_serial", s="%08X" % cfg.get("serial", 0)),
+                     i18n.t("mgmt_enabled", v=", ".join(names) or "—"),
+                     i18n.t("mgmt_supported", v=", ".join(sup) or "—")]
+            self.mgmt_text = "\n".join(lines)
+            self.mgmt_hint = i18n.t("mgmt_locked") if cfg.get("config_lock") \
+                else i18n.t("mgmt_unlocked")
+            ids = self.ids_of("mgmt")
+            for i, (mask, _n) in enumerate(MGMT_CAPS):
+                key = "itf%d" % i
+                if key in ids:
+                    ids[key].state = "down" if mask & cfg.get("usb_enabled", 0) \
+                        else "normal"
+            self._done(i18n.t("mgmt_read_done"))
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def mgmt_apply(self):
+        cfg = getattr(self, "_mgmt_cfg", None)
+        ids = self.ids_of("mgmt")
+        mask = 0
+        for i, (m, _n) in enumerate(MGMT_CAPS):
+            if ids.get("itf%d" % i) is not None and ids["itf%d" % i].state == "down":
+                mask |= m
+        if mask == 0:
+            self.status_text = i18n.t("mgmt_need_one")
+            return
+
+        def work():
+            self._mgmt().set_usb_enabled(mask)
+            return mask
+
+        def done(_m):
+            self._done(i18n.t("mgmt_applied"))
+            self.mgmt_read()
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def mgmt_factory_reset(self):
+        self._ask_confirm(i18n.t("mgmt_reset_title"),
+                          i18n.t("mgmt_reset_body"),
+                          i18n.t("mgmt_reset_go"),
+                          lambda _v: self._mgmt_factory_reset(),
+                          typed_word="ERASE")
+
+    def _mgmt_factory_reset(self):
+        def work():
+            self._mgmt().factory_reset()
+            return None
+
+        def done(_):
+            self._done(i18n.t("mgmt_reset_done"))
+            self.oath_text = ""
+            self.mgmt_text = ""
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    # --------------------------------------------------------------- vendor
+
+    def _vendor(self):
+        """A vendor-command client over the current CTAP connection.
+
+        Everything in this section is a CTAP authenticatorConfig exchange, so
+        it needs the FIDO channel. Pointing it at a CCID connection would fail
+        in a confusing way: the board is connected, the button does nothing.
+        """
+        if self.kind != "ctap" or self.transport is None:
+            raise UserError(i18n.t("err_no_ctap"))
+        return VendorApp(self.transport)
+
+    def _vendor_token(self, app=None):
+        """The token cached by the last `vendor_auth`, or a clear refusal."""
+        token = getattr(self, "_vendor_pin_token", None)
+        if token is None:
+            raise UserError(i18n.t("vendor_need_token"))
+        return token
+
+    def _vendor_pin(self) -> str:
+        ids = self.ids_of("vendor")
+        box = ids.get("vendor_pin")
+        pin = (box.text if box is not None else "") or ""
+        pin = pin.strip()
+        if not pin:
+            raise UserError(i18n.t("uv_pin_required"))
+        return pin
+
+    def _vendor_target(self):
+        """(slot, cred_id) from the screen - exactly one of them, or None.
+
+        The firmware rejects a command that names both, and rejects one that
+        names neither, so the two are parsed once here rather than in every
+        handler.
+        """
+        ids = self.ids_of("vendor")
+        slot_raw = ((ids["vendor_slot"].text or "").strip()
+                    if ids.get("vendor_slot") is not None else "")
+        cred_raw = ((ids["vendor_credid"].text or "").strip()
+                    if ids.get("vendor_credid") is not None else "")
+
+        if cred_raw and slot_raw:
+            # The firmware takes exactly one and refuses a request naming
+            # both. Picking one silently would apply the policy to a different
+            # credential than the operator meant.
+            raise UserError(i18n.t("vendor_one_target"))
+        if cred_raw:
+            try:
+                return None, bytes.fromhex(cred_raw)
+            except ValueError:
+                raise UserError(i18n.t("vendor_bad_hex"))
+        if slot_raw:
+            try:
+                return int(slot_raw, 0), None
+            except ValueError:
+                raise UserError(i18n.t("vendor_bad_slot"))
+        return None, None
+
+    def _vendor_require_target(self):
+        slot, cred = self._vendor_target()
+        if slot is None and cred is None:
+            raise UserError(i18n.t("vendor_need_target"))
+        return slot, cred
+
+    def _vendor_run(self, work, ok_text, log_text=""):
+        """Run `work` off the UI thread and report either way."""
+
+        def done(res):
+            self._done(ok_text)
+            if log_text:
+                self.log(log_text)
+            self._vendor_hint(res)
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def _vendor_hint(self, _res=None):
+        self.vendor_hint = i18n.t("vendor_ready")
+
+    def vendor_auth(self):
+        """Exchange the PIN for a token that authorises the policy commands."""
+        try:
+            pin = self._vendor_pin()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+
+        def work():
+            token = self._vendor().get_pin_token(pin)
+            # The token is only kept in memory. Writing it anywhere would undo
+            # the point of the PIN exchange.
+            self._vendor_pin_token = token
+            return True
+
+        def done(_):
+            self._done(i18n.t("vendor_authed"))
+            self.vendor_hint = i18n.t("vendor_ready")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def vendor_nork(self):
+        self._vendor_toggle("toggle_nork", "nork")
+
+    def vendor_mcuv(self):
+        self._vendor_toggle("toggle_mcuv", "mcuv")
+
+    def _vendor_toggle(self, method, tag):
+        """Run one of the two global bit flips.
+
+        Both are toggles, so pressing the same button twice returns to where
+        it started - the label says so rather than claiming a fixed state.
+        """
+        try:
+            token = self._vendor_token()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+
+        def work():
+            getattr(self._vendor(), method)(token)
+            return True
+
+        def done(_):
+            self._done(i18n.t("vendor_done"))
+            self.log(f"vendor: {tag} toggled")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def vendor_revoke(self):
+        """Revoke one credential - there is no way to undo this."""
+        try:
+            slot, cred = self._vendor_require_target()
+            token = self._vendor_token()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+
+        self._ask_confirm(i18n.t("vendor_revoke_title"),
+                          i18n.t("vendor_revoke_body"),
+                          i18n.t("vendor_revoke_go"),
+                          lambda _v: self._vendor_revoke(slot, cred, token),
+                          typed_word="REVOKE")
+
+    def _vendor_revoke(self, slot, cred, token):
+        def work():
+            self._vendor().revoke_credential(slot=slot, cred_id=cred,
+                                             pin_token=token)
+            return True
+
+        def done(_):
+            self._done(i18n.t("vendor_done"))
+            self.log("vendor: credential revoked")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def vendor_expire(self):
+        try:
+            slot, cred = self._vendor_require_target()
+            token = self._vendor_token()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+        ids = self.ids_of("vendor")
+        raw = ((ids["vendor_expiry"].text or "").strip()
+               if ids.get("vendor_expiry") is not None else "")
+        try:
+            stamp = int(raw, 0)
+        except (TypeError, ValueError):
+            self.status_text = i18n.t("vendor_bad_expiry")
+            return
+
+        def work():
+            self._vendor().expire_credential(stamp, slot=slot, cred_id=cred,
+                                             pin_token=token)
+            return True
+
+        def done(_):
+            self._done(i18n.t("vendor_done"))
+            self.log(f"vendor: expiry set to {stamp}")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def vendor_button(self):
+        try:
+            slot, cred = self._vendor_require_target()
+            token = self._vendor_token()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+
+        def work():
+            self._vendor().require_button(True, slot=slot, cred_id=cred,
+                                          pin_token=token)
+            return True
+
+        def done(_):
+            self._done(i18n.t("vendor_done"))
+            self.log("vendor: button required")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def vendor_pinpolicy(self):
+        try:
+            token = self._vendor_token()
+        except UserError as exc:
+            self.status_text = str(exc)
+            return
+        ids = self.ids_of("vendor")
+        raw = ((ids["vendor_minpin"].text or "").strip()
+               if ids.get("vendor_minpin") is not None else "")
+        try:
+            length = int(raw, 0)
+        except (TypeError, ValueError):
+            self.status_text = i18n.t("uv_bad_length")
+            return
+        if length < 4:
+            self.status_text = i18n.t("uv_bad_length")
+            return
+
+        def work():
+            self._vendor().set_pin_policy(length, pin_token=token)
+            return True
+
+        def done(_):
+            self._done(i18n.t("vendor_done"))
+            self.log(f"vendor: minimum PIN length {length}")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def vendor_export(self):
+        """Fetch the encrypted backup blob and show it as hex.
+
+        The blob is sealed by the device, so it can be written down or stored
+        anywhere; what it cannot do is be turned back into a 24-word phrase
+        here - that derivation lives outside this project.
+        """
+        def work():
+            return self._vendor().backup_export()
+
+        def done(blob):
+            self._vendor_blob = blob
+            hexed = blob.hex()
+            lines = [hexed[i:i + 32] for i in range(0, len(hexed), 32)]
+            self.vendor_text = "\n".join(lines)
+            self.vendor_hint = i18n.t("vendor_export_hint")
+            self._done(i18n.t("vendor_exported", n=len(blob)))
+            self.log(f"vendor: exported {len(blob)} bytes")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
+    def vendor_import(self):
+        """Restore a blob shown by `vendor_export`, after a typed confirmation."""
+        def on_yes(value):
+            raw = str(value or "").strip().replace(" ", "")
+            try:
+                blob = bytes.fromhex(raw)
+            except ValueError:
+                self.status_text = i18n.t("vendor_bad_hex")
+                return
+            self._vendor_import(blob)
+
+        self._ask_confirm(i18n.t("vendor_import_title"),
+                          i18n.t("vendor_import_body"),
+                          i18n.t("vendor_import_go"),
+                          on_yes, entry=True,
+                          entry_hint=i18n.t("vendor_import_hint"))
+
+    def _vendor_import(self, blob):
+        def work():
+            self._vendor().backup_import(blob)
+            return True
+
+        def done(_):
+            self._done(i18n.t("vendor_imported"))
+            self.vendor_hint = i18n.t("vendor_ready")
+            self.log("vendor: backup imported")
+
+        self._worker(work, done, i18n.t("msg_processing"))
+
     # ------------------------------------------------------------ firmware
 
     fw_dev_text = StringProperty("")
     fw_info_text = StringProperty("")
+
+    oath_text = StringProperty("")
+    oath_hint = StringProperty("")
+    mgmt_text = StringProperty("")
+    mgmt_hint = StringProperty("")
+    vendor_text = StringProperty("")
+    vendor_hint = StringProperty("")
 
     def _fw_reset(self):
         self._fw_data = None
