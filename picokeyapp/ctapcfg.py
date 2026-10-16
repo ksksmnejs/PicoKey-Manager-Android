@@ -257,8 +257,13 @@ class UvConfig:
             payload = dumps(params)
             body = bytes([subcommand]) + payload
 
-        auth_param = U.protocol1_authenticate(self._token,
-                                              bytes([CMD_CONFIG]) + body)
+        # authenticatorConfig authenticates over 32 filler bytes first, then
+        # the command byte, the subcommand and the sub-parameters. The filler
+        # is what keeps this payload from colliding with another command's;
+        # leaving it out produces a tag the firmware rejects as bad PIN auth,
+        # which then reads as "this device has no such feature".
+        auth_param = U.protocol1_authenticate(
+            self._token, b"\xff" * 32 + bytes([CMD_CONFIG]) + body)
         req = {
             CFG_PARAM_SUBCOMMAND: subcommand,
             CFG_PARAM_PROTOCOL: PROTOCOL_ONE,
