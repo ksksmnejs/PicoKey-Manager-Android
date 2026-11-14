@@ -1552,14 +1552,19 @@ class PicoKeyApp(App):
         kv = _TOKEN.sub(self._expand_token(template), template)
         return _PLACEHOLDER.sub(rep, kv)
 
-    @staticmethod
-    def _expand_token(template):
+    def _expand_token(self, template):
         """Return the replacement for a {{TOKEN}} placeholder.
 
         The placeholder already carries the template's leading whitespace, but
         that only reaches the first generated line - the rest would land at
         column 0 and break the parser. So every line after the first gets the
         placeholder's own indent added back.
+
+        This must stay an instance method: the MGMT_ITF branch calls
+        self._mgmt_itf_kv(), and the returned `replace` closure captures
+        `self`. Marking it @staticmethod leaves that name unbound, which only
+        blows up on the one template that actually uses MGMT_ITF (KV_MGMT),
+        i.e. at startup, after the first five screens have already loaded.
         """
         def replace(match):
             name = match.group(1)
