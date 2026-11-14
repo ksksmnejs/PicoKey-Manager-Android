@@ -1621,6 +1621,11 @@ class PicoKeyApp(App):
     counter_pin = StringProperty("")
     counter_text = StringProperty("")
     counter_history_text = StringProperty("")
+    # KV_COUNTER binds the result label's colour to this. Every app.<name>
+    # used in a KV body must exist on the App instance at Builder.load_string
+    # time - a missing one aborts the whole build with a BuilderException,
+    # which on Android looks exactly like a crash on launch.
+    counter_alert = BooleanProperty(False)
     connected = False
 
     def __init__(self, **kwargs):
@@ -2012,6 +2017,10 @@ class PicoKeyApp(App):
 
     def counter_read(self):
         """Sample signCount through one getAssertion and compare with history."""
+        # Clear the alert first: the early returns below, and any failure in
+        # the worker thread (which goes through _fail instead of done()), must
+        # not leave a stale red result on screen.
+        self.counter_alert = False
         if counter is None:
             self.counter_text = i18n.t("counter_need_ctap")
             return
@@ -2031,6 +2040,10 @@ class PicoKeyApp(App):
 
         def done(res):
             self._done()
+            # Keep the colour in step with the text: "counter unused" is a
+            # note, not an error; a rollback is the one case to flag red.
+            self.counter_alert = bool(
+                res.get("regression") and not res.get("counter_unused"))
             self.counter_text = self._format_counter_result(res)
             self.counter_show_history()
             self.log(i18n.t(
@@ -2087,6 +2100,7 @@ class PicoKeyApp(App):
 
     def counter_clear_history(self):
         self._counter_store().clear()
+        self.counter_alert = False
         self.counter_show_history()
         self.log(i18n.t("counter_history_cleared"))
 

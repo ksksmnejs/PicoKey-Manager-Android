@@ -17,6 +17,7 @@ Run:  python3 tools/fake_android_check.py
 import os
 import sys
 import struct
+import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -269,6 +270,12 @@ def build_device():
 
 
 def main():
+    # A KV body that binds to a missing app.<name> aborts build() on Android.
+    # Catch it here first; the USB simulation below never parses real KV.
+    _tools = os.path.dirname(os.path.abspath(__file__))
+    subprocess.check_call(
+        [sys.executable, os.path.join(_tools, "check_kv_bindings.py")])
+
     _install_fake_jnius()
     dev, pico, fido = build_device()
     global _MANAGER
