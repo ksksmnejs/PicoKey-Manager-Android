@@ -701,6 +701,58 @@ STRINGS.update({
         "en": "Note: this flashing path has not been verified on real hardware. An ESP32 failure is recoverable (the ROM download mode can rescue it), but read the log for each step.",
     },
 
+    # ------------------------------------------------------- signature counter
+    "scan_channels": {"zh": "可用通道", "en": "Detected channels"},
+    "btn_counter": {"zh": "签名计数器", "en": "Sign counter"},
+    "counter_title": {"zh": "签名计数器", "en": "Signature counter"},
+    "counter_how_title": {"zh": "这是干什么用的", "en": "What this does"},
+    "counter_how_body": {
+        "zh": "CTAP2 没有直接查询签名计数器的命令，计数只出现在一次真实认证的 authenticatorData 里。这里发起一次 getAssertion，读出该 RP 下一条常驻凭据的 signCount，再与本机保存的历史对比。",
+        "en": "CTAP2 has no command to query the signature counter: it only appears in the authenticatorData of a real assertion. This runs one getAssertion, reads the signCount of a resident credential for that RP, and compares it with the history kept on this phone.",
+    },
+    "counter_warn": {
+        "zh": "注意：每次采样会让该凭据的计数 +1，需要输入 PIN；部分固件还会要求触碰按键。这是协议本身的限制，本页不会向设备写入任何配置。",
+        "en": "Note: each sample advances that credential's counter by one and needs the PIN; some firmware also asks for a touch. This is a protocol limitation - the page never writes a setting to the device.",
+    },
+    "counter_sample_title": {"zh": "采样", "en": "Take a sample"},
+    "counter_rp": {"zh": "网站域名 (RP ID)", "en": "Relying party ID"},
+    "counter_pin": {"zh": "设备 PIN", "en": "Device PIN"},
+    "counter_read": {"zh": "读取计数器", "en": "Read counter"},
+    "counter_refresh": {"zh": "刷新历史", "en": "Refresh history"},
+    "counter_clear": {"zh": "清空历史", "en": "Clear history"},
+    "counter_history_title": {"zh": "历史记录", "en": "History"},
+    "counter_need_ctap": {
+        "zh": "签名计数器走 CTAP2，请先扫描并连接「FIDO HID 通道」。",
+        "en": "The counter lives on CTAP2. Scan and connect to the FIDO HID channel first.",
+    },
+    "counter_need_input": {
+        "zh": "请填写 RP ID 和设备 PIN。",
+        "en": "Enter both the RP ID and the device PIN.",
+    },
+    "counter_reading": {"zh": "正在读取计数器…", "en": "Reading signature counter…"},
+    "counter_result": {
+        "zh": "RP：{rp}\n凭据：{cred}\n本次计数：{n}\n上次：{prev}\n变化：{delta}\n历史最高：{high}\n样本数：{samples}",
+        "en": "RP: {rp}\nCredential: {cred}\nThis sample: {n}\nPrevious: {prev}\nChange: {delta}\nHighest: {high}\nSamples: {samples}",
+    },
+    "counter_regression": {
+        "zh": "[!] 计数回退：本次 {n} 不大于上次 {prev}。服务端会拒绝这种断言；多半是固件状态回滚、flash 被快照恢复，或凭据被克隆。",
+        "en": "[!] Counter rolled back: this sample {n} is not greater than the previous {prev}. Servers reject such an assertion; the usual causes are a firmware state rollback, a restored flash snapshot, or a cloned credential.",
+    },
+    "counter_unused": {
+        "zh": "该设备始终返回 0，说明它没有实现签名计数器（0 不参与回退判定）。",
+        "en": "This device always returns 0, meaning it does not implement a signature counter (0 is excluded from the rollback check).",
+    },
+    "counter_history_empty": {"zh": "（还没有采样记录）", "en": "(no samples yet)"},
+    "counter_history_row": {
+        "zh": "{rp} · {cred} · 上次 {last} · 最高 {high} · {n} 次 · {when}",
+        "en": "{rp} · {cred} · last {last} · high {high} · {n} samples · {when}",
+    },
+    "counter_history_cleared": {"zh": "计数器历史已清空", "en": "Counter history cleared"},
+    "msg_counter_log": {
+        "zh": "counter: rp={rp} cred={cred} n={n} prev={prev} max={high} regression={regression}",
+        "en": "counter: rp={rp} cred={cred} n={n} prev={prev} max={high} regression={regression}",
+    },
+
     # ------------------------------------------------------------ diagnostics
     "diag_inset": {"zh": "状态栏高度 {value}dp，已为顶部留出空间", "en": "status bar is {value}dp, top inset applied"},
 })

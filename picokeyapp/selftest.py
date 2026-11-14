@@ -280,17 +280,23 @@ def _skipped(label, why):
     return f"  [--] {label} - {why}"
 
 
-def _check(label, condition, detail=""):
+def _check(label, condition, detail="", *, hint=""):
     """Record one assertion without aborting the run.
 
     This used to raise on the first failure. That is why the self-test looked
     like it failed "forever": each run stopped at the first bad check, the fix
     went in, and the next run stopped at the next one. Reporting every failure
     in one pass means one run shows the whole picture.
+
+    `detail` is neutral information shown on both outcomes. `hint` explains
+    what went wrong and is only printed on a FAIL - previously several checks
+    passed while their [ok] line still said "it was accepted", which read like
+    a broken assertion even though the assertion was fine.
     """
     if not condition:
-        _FAILURES.append(f"{label} FAILED {detail}".strip())
-        return f"  [FAIL] {label}{(' - ' + detail) if detail else ''}"
+        why = hint or detail
+        _FAILURES.append(f"{label} FAILED {why}".strip())
+        return f"  [FAIL] {label}{(' - ' + why) if why else ''}"
     return f"  [ok] {label}{(' - ' + detail) if detail else ''}"
 
 
@@ -310,6 +316,7 @@ _NEEDS_CTAP = ("btn_wink", "btn_test_presence",
 
 # Project root: selftest.py lives in picokeyapp/, main.py one level up.
 _SELFTEST_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SOURCE_AVAILABLE = os.path.exists(os.path.join(_SELFTEST_ROOT, "main.py"))
 
 
 def _check_font_coverage() -> list:
@@ -322,12 +329,13 @@ def _check_font_coverage() -> list:
     strings afterwards without rebuilding it (or drops in a different font).
     """
     out = []
+    if not _SOURCE_AVAILABLE:
+        return [_skipped("font coverage", t("skip_no_source"))]
     try:
         from fontTools.ttLib import TTFont
     except Exception:
-        out.append(_check("the font can be inspected", False,
-                          "fontTools is not available here"))
-        return out
+        return [_skipped("the font can be inspected",
+                         "fontTools is not available in this build")]
 
     font_path = os.path.join(_SELFTEST_ROOT, "assets", "fonts",
                              "NotoSansSC-Regular-subset.ttf")
@@ -358,7 +366,13 @@ def _check_font_coverage() -> list:
 
 def _check_row_height() -> list:
     """Rows must grow for a wrapped label instead of clipping it."""
-    src = open(os.path.join(_SELFTEST_ROOT, "main.py"), encoding="utf-8").read()
+    if not _SOURCE_AVAILABLE:
+        return [_skipped("row height", t("skip_no_source"))]
+    try:
+        src = open(os.path.join(_SELFTEST_ROOT, "main.py"),
+                   encoding="utf-8").read()
+    except OSError:
+        return [_skipped("row height", t("skip_no_source"))]
     out = []
     out.append(_check("field rows size themselves to their text",
                       "height: self.minimum_height" in src,
@@ -1054,18 +1068,21 @@ def _check_uf2_family():
     lines.append(_check("a UF2 without the family flag reads as unknown",
                         flasher.uf2_target_family(
                             _mk_uf2_family(0xE48BFF59, flags=0)) == "unknown",
-                        "flags bit 0x2000 is not checked; "
+                        hint="flags bit 0x2000 is not checked; "
                         "fileSize would be read as a family ID"))
 
     # The old code read (flags >> 24) & 0xFF, which is 0 for a normal UF2 and
     # so always fell through to "unknown". If anyone puts it back, this fires
     # even though "unknown" is also the right answer for a file with no flag.
+    if not _SOURCE_AVAILABLE:
+        lines.append(_skipped("UF2 source checks", t("skip_no_source")))
+        return lines
     src = open(os.path.join(_SELFTEST_ROOT, "picokeyapp", "flasher.py"),
                encoding="utf-8").read()
     lines.append(_check("the family ID comes from offset 28, not from flags",
                         "struct.unpack_from(\"<I\", data, UF2_OFF_FAMILY)" in src
                         and "flags >> 24" not in src,
-                        "reading the family out of the flags word always "
+                        hint="reading the family out of the flags word always "
                         "yields zero"))
 
     # And the UI has to say which one it is, or the distinction is invisible.
@@ -1073,7 +1090,7 @@ def _check_uf2_family():
                 encoding="utf-8").read()
     lines.append(_check("a Pico 1 image is called out in the firmware info",
                         "fw_uf2_rp2040" in main,
-                        "the family is printed but never explained, so a "
+                        hint="the family is printed but never explained, so a "
                         "mismatched image still looks fine"))
     return lines
 
@@ -1250,7 +1267,7 @@ def _check_uv_config() -> list:
                       U._encrypt_block(pt, rk).hex()))
     out.append(_check("AES-256 decrypts its own output",
                       U._decrypt_block(ref, rk) == pt,
-                      "the inverse column mix is wrong"))
+                      hint="the inverse column mix is wrong"))
 
     secret = U.protocol1_shared_secret(b"\x01" * 32)
     out.append(_check("PIN/UV protocol one derives SHA-256(x)",
@@ -1518,7 +1535,7 @@ def _check_oath() -> list:
     c1, _ = app.calculate("hotp")
     c2, _ = app.calculate("hotp")
     out.append(_check("HOTP advances the counter between two calls",
-                      c1 != c2, f"both calls returned {c1}"))
+                      c1 != c2, f"{c1} -> {c2}"))
     hotp_entry = [e for e in app.list() if e["name"] == "hotp"]
     out.append(_check("a stored HOTP is listed with its type",
                       bool(hotp_entry) and hotp_entry[0]["type"] == "HOTP",
@@ -1531,7 +1548,7 @@ def _check_oath() -> list:
     moved = (dev.creds.get("alpha2", {}).get("key") == before
              and "alpha" not in dev.creds)
     out.append(_check("renaming moves the secret instead of copying it",
-                      moved, "the old name still holds a secret"))
+                      moved, hint="the old name still holds a secret"))
 
     app.delete("beta")
     out.append(_check("deleting removes the entry", "beta" not in dev.creds))
@@ -1544,14 +1561,59 @@ def _check_oath() -> list:
     app.select()          # the challenge is only published on SELECT
     out.append(_check("the device asks for the password once one is set",
                       app.code_required,
-                      "no challenge published, so nothing would be asked"))
+                      hint="no challenge published, so nothing would be asked"))
     ok = app.validate_and_check(b"bad")
     out.append(_check("a wrong password is refused", ok is False,
-                      "it was accepted"))
+                      hint="it was accepted"))
 
     app.reset()
     out.append(_check("resetting clears every credential",
-                      not dev.creds, f"left over: {list(dev.creds)}"))
+                      not dev.creds, hint=f"left over: {list(dev.creds)}"))
+    return out
+
+
+def _check_counter() -> list:
+    """signCount parsing and rollback detection, against no hardware at all."""
+    import struct
+    from .counter import (CounterError, CounterStore,
+                          sign_count_from_authdata)
+    out = []
+    auth = (b"\x00" * 32 + b"\x05" + struct.pack(">I", 0x01020304)
+            + b"trailing-attested-data")
+    out.append(_check("signCount comes from bytes 33..36 of authData",
+                      sign_count_from_authdata(auth) == 0x01020304))
+    try:
+        sign_count_from_authdata(b"\x00" * 20)
+        short_ok = False
+    except CounterError:
+        short_ok = True
+    out.append(_check("a truncated authData is refused, not misread", short_ok))
+
+    store = CounterStore(None)
+    base = {"rp_id": "login.microsoft.com", "cred_id": "aabbccdd",
+            "user_name": ""}
+    r1 = store.record(dict(base, sign_count=10))
+    r2 = store.record(dict(base, sign_count=12))
+    r3 = store.record(dict(base, sign_count=9))
+    out.append(_check("a rising counter is not flagged",
+                      not r1["regression"] and not r2["regression"]
+                      and r2["delta"] == 2, f"10 -> 12 (delta {r2['delta']})"))
+    out.append(_check("a smaller counter is flagged as a rollback",
+                      r3["regression"] and r3["previous"] == 12,
+                      f"12 -> 9 (delta {r3['delta']})"))
+    out.append(_check("the high-water mark is kept across a rollback",
+                      r3["max"] == 12))
+    zero = CounterStore(None)
+    z1 = zero.record(dict(base, sign_count=0))
+    z2 = zero.record(dict(base, sign_count=0))
+    out.append(_check("a device without a counter does not false-alarm",
+                      z1["counter_unused"] and z2["counter_unused"]
+                      and not z2["regression"]))
+    out.append(_check("the history keeps every credential separately",
+                      len(store.summary()) == 1))
+    store.clear()
+    out.append(_check("clearing the history leaves nothing behind",
+                      store.summary() == []))
     return out
 
 
@@ -2323,10 +2385,15 @@ def _run_body() -> str:
         lines.append(_check("mismatch names both ops and says it stopped", False,
                             "no exception"))
     except flasher.FirmwareError as e:
+        msg = str(e)
+        low = msg.lower()
+        stopped = ("未执行第二次" in msg or "没有重复发送" in msg
+                   or "not sent twice" in low or "was not sent" in low
+                   or "did not retry" in low or "no retry" in low)
         lines.append(_check("mismatch names both ops and says it stopped",
-                            "08" in str(e) and "04" in str(e)
-                            and ("未执行第二次" in str(e)
-                                 or "没有重复发送" in str(e)), str(e)))
+                            "08" in msg and "04" in msg and stopped, msg,
+                            hint="the message must name both opcodes and say "
+                                 "nothing was sent twice"))
     except Exception as e:
         lines.append(_check("mismatch names both ops and says it stopped", False,
                             type(e).__name__ + ": " + str(e)))
@@ -2770,6 +2837,9 @@ def _run_body() -> str:
     lines.extend(_guarded("oath", _check_oath))
     lines.append("")
     lines.extend(_guarded("mgmt", _check_mgmt))
+    lines.append("")
+    lines.append(t("counter_title") + ":")
+    lines.extend(_guarded("counter", _check_counter))
 
     lines.append("")
     lines.append("")

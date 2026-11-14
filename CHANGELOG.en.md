@@ -39,6 +39,25 @@ If the build fails the job stops early and no version number is consumed.
 
 ---
 
+## [v0.4.1] - 2026-11-14
+
+### Added
+- Signature counter: CTAP2 has no command to query the counter; it only appears in the authenticatorData of a real assertion. This page runs one getAssertion, reads signCount, keeps a per-credential history on the phone and compares samples. A rollback is highlighted because servers reject such an assertion - the usual causes are a firmware state rollback or a restored flash snapshot. Open it from the Device page; it needs the FIDO HID channel and the device PIN. Each sample advances that credential's counter by one, which the page states plainly, and no setting is ever written to the device.
+- The first line of every log now carries the version and build identity, so two captures can be told apart.
+- A new self-test group for the counter: authenticatorData offsets, rising/rollback detection, the high-water mark, and no false alarm on a device that does not implement a counter.
+
+### Fixed
+- The Management / USB interfaces screen used `self` while expanding the `MGMT_ITF` placeholder, but the expander was a static method, so opening that screen always raised `NameError`. It is now an instance method, with a comment explaining why.
+- Opening several pages and then going back landed on an unrelated screen: every back control hard-coded a destination and ScreenManager keeps no history. A single navigation stack now drives both the on-screen back buttons and Android's hardware back key; "Back to scan" clears the history explicitly.
+- Four false self-test failures: three `FileNotFoundError` / fontTools cases caused by a packaged build having no loose source files are now skipped, and one check that only recognised the Chinese error text now accepts both languages. Several `[ok]` lines also carried failure explanations, which now print only on a real failure.
+- Long channel descriptions painted over the next card, and fixed row heights clipped longer English labels.
+
+### Changed
+- UI overhaul: the connection page is now a primary action on top, channel cards in the middle and a compact tool row at the bottom. All eight screens share cards, rounded corners, spacing, titles and text-aware row heights, so both Chinese and English labels wrap without clipping.
+- The bundled font subset was rebuilt from the new strings (282 KB).
+
+---
+
 ## [v0.4.0] - 2026-10-10
 
 ### Added

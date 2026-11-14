@@ -49,6 +49,7 @@ from kivy.metrics import dp
 from kivy.properties import (BooleanProperty, ListProperty, NumericProperty,
                              StringProperty)
 from kivy.uix.button import Button
+from kivy.factory import Factory
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.uix.textinput import TextInput
@@ -69,6 +70,16 @@ _LOG_FILE = "picokey.log"
 _LOG_PREV = "picokey.log.1"
 _LOG_MAX = 512 * 1024
 _LOG_KEEP = 8
+
+# Written into the first line of every log so two capture files can be told
+# apart. APP_VERSION follows the newest heading in CHANGELOG.md (the workflow
+# copies that number into buildozer.spec); BUILD_COMMIT comes from the small
+# build_info module (overwritten by the workflow when a revision is known).
+APP_VERSION = "0.4.1"
+try:
+    from picokeyapp.build_info import COMMIT as BUILD_COMMIT
+except Exception:                                    # partial upload
+    BUILD_COMMIT = "dev"
 _log_name = None
 _log_lock = threading.Lock()
 _log_started = False
@@ -295,8 +306,10 @@ KV_RULES = f"""
     font_name: 'AppFont'
     font_size: '15sp'
     foreground_color: {_rgba(C_TEXT)}
-    background_color: 0.09, 0.11, 0.14, 1
-    padding: dp(10), dp(10)
+    background_color: 0.11, 0.14, 0.18, 1
+    background_normal: ''
+    background_active: ''
+    padding: dp(12), dp(10)
     halign: 'left'
 
 # A toggle used for the option / curve / interface switches.
@@ -309,55 +322,127 @@ KV_RULES = f"""
     color: {_rgba(C_TEXT)}
     bold: (True if self.state == 'down' else False)
 
-# Buttons size themselves to their own text.
+# ---------------------------------------------------------------------------
+# Buttons. The stock Button paints a hard rectangle in its own canvas layer,
+# which covers anything drawn in canvas.before; background_color is therefore
+# fully transparent and the rounded card is drawn underneath instead.
 #
-# A Button with the default text_size=None never wraps, so a long label
-# (English strings are noticeably longer than the Chinese ones) is drawn on a
-# single line and clipped by the fixed dp(52) height - the classic "button and
-# text do not match" look. Binding text_size to the width makes the label wrap,
-# and binding height to texture_size lets the button grow to fit the wrapped
-# text instead of cutting it off.
+# Every button sizes itself to its own text. A Button with text_size=None never
+# wraps, so an English label (longer than the Chinese one) is clipped by a
+# fixed height. Binding text_size to the width makes it wrap, and binding the
+# height to texture_size lets it grow instead of cutting the second line off.
+# ---------------------------------------------------------------------------
 <MenuButton@Button>:
     font_name: 'AppFont'
     size_hint_y: None
     height: max(dp(52), self.texture_size[1] + dp(24))
-    font_size: '16sp'
-    # max() guards the first layout pass, where width can still be ~0 and
-    # width - 24 would be a negative text_size.
-    text_size: max(dp(1), self.width - dp(24)), None
+    font_size: '15sp'
+    text_size: max(dp(1), self.width - dp(28)), None
     halign: 'center'
     valign: 'center'
-    background_color: {_rgba(C_SURFACE)}
+    background_color: 0, 0, 0, 0
     background_normal: ''
     background_down: ''
     color: {_rgba(C_TEXT)}
-    # Disabled while a USB operation is running: without this, tapping twice
-    # queues a second transfer on a transport that is already mid-exchange.
     disabled: app.busy
     opacity: 0.45 if self.disabled else 1
+    canvas.before:
+        Color:
+            rgba: ({_rgba(C_SURFACE)}) if self.state == 'normal' else ({_rgba(C_PRIMARY)})
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(12)]
 
-<PrimaryButton@MenuButton>:
-    background_color: {_rgba(C_PRIMARY)}
+<PrimaryButton@Button>:
+    font_name: 'AppFont'
+    size_hint_y: None
+    height: max(dp(54), self.texture_size[1] + dp(24))
+    font_size: '16sp'
+    text_size: max(dp(1), self.width - dp(28)), None
+    halign: 'center'
+    valign: 'center'
     bold: True
+    background_color: 0, 0, 0, 0
+    background_normal: ''
+    background_down: ''
+    color: {_rgba(C_TEXT)}
+    disabled: app.busy
+    opacity: 0.45 if self.disabled else 1
+    canvas.before:
+        Color:
+            rgba: ({_rgba(C_PRIMARY)}) if self.state == 'normal' else (0.10, 0.34, 0.76, 1)
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(12)]
 
-<DangerButton@MenuButton>:
-    background_color: {_rgba(C_DANGER)}
+<DangerButton@Button>:
+    font_name: 'AppFont'
+    size_hint_y: None
+    height: max(dp(52), self.texture_size[1] + dp(24))
+    font_size: '15sp'
+    text_size: max(dp(1), self.width - dp(28)), None
+    halign: 'center'
+    valign: 'center'
     bold: True
+    background_color: 0, 0, 0, 0
+    background_normal: ''
+    background_down: ''
+    color: {_rgba(C_TEXT)}
+    disabled: app.busy
+    opacity: 0.45 if self.disabled else 1
+    canvas.before:
+        Color:
+            rgba: {_rgba(C_DANGER)}
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(12)]
+
+# A detected channel. Left aligned, two lines, and tall enough for the detail
+# text: the old single-line Button painted its hint over the next card.
+<ChannelCard@Button>:
+    font_name: 'AppFont'
+    font_size: '13sp'
+    size_hint_y: None
+    height: max(dp(84), self.texture_size[1] + dp(28))
+    text_size: max(dp(1), self.width - dp(32)), None
+    halign: 'left'
+    valign: 'center'
+    background_color: 0, 0, 0, 0
+    background_normal: ''
+    background_down: ''
+    color: {_rgba(C_TEXT)}
+    disabled: app.busy
+    opacity: 0.45 if self.disabled else 1
+    canvas.before:
+        Color:
+            rgba: ({_rgba(C_SURFACE)}) if self.state == 'normal' else ({_rgba(C_PRIMARY)})
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(12)]
 
 <SectionLabel@Label>:
     font_name: 'AppFont'
     size_hint_y: None
-    height: dp(34)
+    height: dp(32)
     font_size: '15sp'
     bold: True
     halign: 'left'
     text_size: self.size
     color: 0.55, 0.78, 1, 1
 
-# Wrapping body text. Every Label that holds more than a couple of words needs
-# BOTH text_size (so it wraps) and a height driven by texture_size (so it is
-# not clipped) - setting one without the other is what makes text overlap or
-# get cut off.
+<ScreenTitle@Label>:
+    font_name: 'AppFont'
+    size_hint_y: None
+    height: dp(42)
+    font_size: '22sp'
+    bold: True
+    halign: 'left'
+    text_size: self.size
+
 <InfoLabel@Label>:
     font_name: 'AppFont'
     size_hint_y: None
@@ -379,14 +464,26 @@ KV_RULES = f"""
     font_size: '14sp'
     color: {_rgba(C_MUTED)}
 
-# Rows used to be a fixed dp(44), which is fine for Chinese but clips a long
-# English field name: FieldLabel wraps (text_size is bound) yet the row cannot
-# grow, so the second line is cut off. Letting both sizes follow the text
-# keeps every row readable in either language.
 <Row@BoxLayout>:
     size_hint_y: None
     height: self.minimum_height
     spacing: dp(6)
+
+# One content block. Everything on a screen lives in one of these so spacing,
+# padding and the surface colour are consistent instead of hand-tuned per page.
+<Card@BoxLayout>:
+    orientation: 'vertical'
+    size_hint_y: None
+    height: self.minimum_height
+    padding: [dp(14), dp(12), dp(14), dp(12)]
+    spacing: dp(8)
+    canvas.before:
+        Color:
+            rgba: {_rgba(C_SURFACE)}
+        RoundedRectangle:
+            pos: self.pos
+            size: self.size
+            radius: [dp(14)]
 """
 
 # ---------------------------------------------------------------------------
@@ -412,6 +509,8 @@ ScreenManager:
         name: 'mgmt'
     VendorScreen:
         name: 'vendor'
+    CounterScreen:
+        name: 'counter'
 """
 
 # Firmware page. Kept separate from the device page on purpose: flashing talks
@@ -547,7 +646,7 @@ BoxLayout:
 
             MenuButton:
                 text: '@@btn_back_scan@@'
-                on_release: app.go('scan')
+                on_release: app.back()
 """
 
 # Screen bodies. Each one is an ANONYMOUS root widget, deliberately: a rule
@@ -568,65 +667,58 @@ BoxLayout:
     # Top padding is dp(12) PLUS the Android status-bar height. Kivy lays out
     # from y=0 of the window, so without this inset the title row sits under
     # the clock/notch icons on any modern phone.
-    padding: [dp(12), dp(12) + app.top_inset, dp(12), dp(12)]
-    spacing: dp(10)
-    BoxLayout:
-        size_hint_y: None
-        height: dp(44)
-        spacing: dp(6)
-        Label:
-            text: '@@language@@'
-            size_hint_x: 0.32
-            halign: 'left'
-            text_size: self.size
-            font_size: '15sp'
-        Spinner:
-            id: lang_spinner
-            values: app.lang_values
-            text: app.lang_current
-            font_name: 'AppFont'
-            font_size: '15sp'
-            on_text: app.on_lang_change(self.text)
-    Label:
+    padding: [dp(14), dp(12) + app.top_inset, dp(14), dp(14)]
+    spacing: dp(12)
+    ScreenTitle:
         text: '@@app_title@@'
-        font_size: '22sp'
-        bold: True
-        size_hint_y: None
-        height: dp(40)
-    Label:
-        # Height follows the text instead of being a fixed dp(60). Some strings
-        # here are long - the "found a serial device but it did not answer the
-        # handshake" hint, for one - and a fixed height clipped them, so the
-        # wrapped remainder was drawn straight over the scan button below.
+    Card:
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40)
+            spacing: dp(8)
+            Label:
+                text: '@@language@@'
+                size_hint_x: 0.36
+                halign: 'left'
+                valign: 'center'
+                text_size: self.size
+                font_size: '14sp'
+            Spinner:
+                id: lang_spinner
+                values: app.lang_values
+                text: app.lang_current
+                font_name: 'AppFont'
+                font_size: '14sp'
+                on_text: app.on_lang_change(self.text)
+    InfoLabel:
         id: status
         text: app.status_text
-        size_hint_y: None
-        height: max(dp(60), self.texture_size[1] + dp(10))
-        text_size: self.width, None
-        halign: 'left'
-        valign: 'top'
-        shorten: False
-        font_size: '14sp'
-        color: 0.7, 0.75, 0.8, 1
     PrimaryButton:
         text: '@@btn_scan@@'
         on_release: app.scan()
+    SectionLabel:
+        text: '@@scan_channels@@'
     ScrollView:
         GridLayout:
             id: list_box
             cols: 1
             size_hint_y: None
             height: self.minimum_height
-            spacing: dp(6)
-    MenuButton:
-        text: '@@btn_selftest@@'
-        on_release: app.selftest()
-    MenuButton:
-        text: '@@btn_firmware@@'
-        on_release: app.go('firmware')
-    MenuButton:
-        text: '@@btn_logs@@'
-        on_release: app.go('log')
+            spacing: dp(10)
+    GridLayout:
+        cols: 3
+        size_hint_y: None
+        height: self.minimum_height
+        spacing: dp(8)
+        MenuButton:
+            text: '@@btn_selftest@@'
+            on_release: app.selftest()
+        MenuButton:
+            text: '@@btn_firmware@@'
+            on_release: app.go('firmware')
+        MenuButton:
+            text: '@@btn_logs@@'
+            on_release: app.go('log')
 """
 
 KV_DEVICE = """
@@ -921,7 +1013,11 @@ BoxLayout:
                 on_release: app.go('vendor')
             MenuButton:
                 text: '@@btn_back_scan@@'
-                on_release: app.go('scan')
+                on_release: app.home()
+            MenuButton:
+                text: '@@btn_counter@@'
+                disabled: app.busy or app.blocked_ctap
+                on_release: app.go('counter')
             MenuButton:
                 text: '@@btn_logs@@'
                 on_release: app.go('log')
@@ -1021,7 +1117,7 @@ BoxLayout:
                 on_release: app.oath_reset()
             MenuButton:
                 text: '@@btn_back_device@@'
-                on_release: app.go('device')
+                on_release: app.back()
             MenuButton:
                 text: '@@btn_logs@@'
                 on_release: app.go('log')
@@ -1081,7 +1177,7 @@ BoxLayout:
                 on_release: app.mgmt_factory_reset()
             MenuButton:
                 text: '@@btn_back_device@@'
-                on_release: app.go('device')
+                on_release: app.back()
             MenuButton:
                 text: '@@btn_logs@@'
                 on_release: app.go('log')
@@ -1212,7 +1308,7 @@ BoxLayout:
                 text: '@@vendor_phrase_note@@'
             MenuButton:
                 text: '@@btn_back_device@@'
-                on_release: app.go('device')
+                on_release: app.back()
 """
 
 KV_LOG = """
@@ -1257,8 +1353,89 @@ BoxLayout:
         on_release: app.clear_log()
     MenuButton:
         text: '@@btn_back@@'
-        on_release: app.go('device' if app.connected else 'scan')
+        on_release: app.back()
 """
+
+KV_COUNTER = """
+BoxLayout:
+    orientation: 'vertical'
+    canvas.before:
+        Color:
+            rgba: 0.071, 0.086, 0.110, 1.000
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    padding: [dp(14), dp(12) + app.top_inset, dp(14), dp(14)]
+    spacing: dp(12)
+    ScreenTitle:
+        text: '@@counter_title@@'
+    ScrollView:
+        GridLayout:
+            id: counter_box
+            cols: 1
+            size_hint_y: None
+            height: self.minimum_height
+            spacing: dp(12)
+            Card:
+                SectionLabel:
+                    text: '@@counter_how_title@@'
+                InfoLabel:
+                    text: '@@counter_how_body@@'
+                InfoLabel:
+                    text: '@@counter_warn@@'
+                    color: 1, 0.75, 0.42, 1
+            Card:
+                SectionLabel:
+                    text: '@@counter_sample_title@@'
+                Row:
+                    FieldLabel:
+                        text: '@@counter_rp@@'
+                    TextInput:
+                        id: counter_rp
+                        text: app.counter_rp
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(46)
+                        on_text: app.counter_rp = self.text
+                Row:
+                    FieldLabel:
+                        text: '@@counter_pin@@'
+                    TextInput:
+                        id: counter_pin
+                        text: app.counter_pin
+                        password: True
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(46)
+                        on_text: app.counter_pin = self.text
+                PrimaryButton:
+                    text: '@@counter_read@@'
+                    disabled: app.busy or app.blocked_ctap
+                    on_release: app.counter_read()
+                InfoLabel:
+                    text: app.counter_text
+                    color: (1, 0.45, 0.35, 1) if app.counter_alert else (0.7, 0.75, 0.8, 1)
+            Card:
+                SectionLabel:
+                    text: '@@counter_history_title@@'
+                InfoLabel:
+                    text: app.counter_history_text
+                GridLayout:
+                    cols: 2
+                    size_hint_y: None
+                    height: self.minimum_height
+                    spacing: dp(8)
+                    MenuButton:
+                        text: '@@counter_refresh@@'
+                        on_release: app.counter_show_history()
+                    DangerButton:
+                        text: '@@counter_clear@@'
+                        on_release: app.counter_clear_history()
+    MenuButton:
+        text: '@@btn_back@@'
+        on_release: app.back()
+"""
+
 
 
 
@@ -1272,8 +1449,8 @@ BoxLayout:
 # missing file.
 _IMPORT_ERROR = None
 try:
-    from picokeyapp import (ctap, ctapcfg, detect, flasher, fonts, i18n,
-                            mgmt, oath, usbhost, uf2write)
+    from picokeyapp import (counter, ctap, ctapcfg, detect, flasher, fonts,
+                            i18n, mgmt, oath, usbhost, uf2write)
     from picokeyapp.mgmt import CAP_NAMES as MGMT_CAPS, ManagementApp
     from picokeyapp.oath import OathApp, SWError, base32_decode as oath_base32_decode
     from picokeyapp.vendor import VendorApp, VendorError
@@ -1292,6 +1469,7 @@ except Exception:
     MGMT_CAPS = []
     ManagementApp = OathApp = None
     VendorApp = None
+    counter = None
     oath_base32_decode = None
     class SWError(Exception):
         pass
@@ -1334,6 +1512,13 @@ QUIET_ERRORS = (
     ValueError,          # bad numeric input in a field
 )
 
+try:
+    # A wrong PIN or a mismatched RP ID already says what to do; a traceback
+    # underneath it only pushes that one line off the top of the log.
+    QUIET_ERRORS += (counter.CounterError,)
+except Exception:                                    # partial upload
+    pass
+
 
 class ScanScreen(Screen):
     pass
@@ -1360,6 +1545,11 @@ class LogScreen(Screen):
 
 
 class FirmwareScreen(Screen):
+    pass
+
+
+class CounterScreen(Screen):
+    """Signature counter sampling (CTAP HID channel only)."""
     pass
 
 
@@ -1424,6 +1614,13 @@ class PicoKeyApp(App):
     blocked_ctap = BooleanProperty(False)
     channel_hint = StringProperty("")
     uv_state_text = StringProperty("")
+    # Signature-counter screen state. These are properties so the freshly
+    # built KV bodies (language switches rebuild every screen) pick them up
+    # without any extra re-render step.
+    counter_rp = StringProperty("")
+    counter_pin = StringProperty("")
+    counter_text = StringProperty("")
+    counter_history_text = StringProperty("")
     connected = False
 
     def __init__(self, **kwargs):
@@ -1458,6 +1655,13 @@ class PicoKeyApp(App):
         # Log lines are buffered here and flushed on the main thread; see log().
         self._log_lock = threading.Lock()
         self._log_pending = []
+        # Where the hardware/back button goes. Kivy's ScreenManager only knows
+        # the current screen; without a stack every "back" control had to guess
+        # a hard-coded destination, which is why opening several pages in a row
+        # returned to an unrelated one.
+        self._nav_stack = []
+        self._keyboard_bound = False
+        self._counter_store_obj = None
 
     # ------------------------------------------------------------ plumbing
 
@@ -1483,8 +1687,9 @@ class PicoKeyApp(App):
         self._refresh_log_path()
         _rotate_log()
         _install_excepthooks()
-        _write_log("=== PicoKey Manager start %s ===\n" %
-                   time.strftime("%Y-%m-%d %H:%M:%S"))
+        _write_log("=== PicoKey Manager start %s | v%s | build %s ===\n" %
+                   (time.strftime("%Y-%m-%d %H:%M:%S"),
+                    APP_VERSION, BUILD_COMMIT))
         try:
             return self._build_impl()
         except Exception:
@@ -1517,6 +1722,12 @@ class PicoKeyApp(App):
         return root
 
     def _build_impl(self):
+        # Android's hardware back key. Without this the OS closes the app from
+        # any sub-page instead of walking back through the pages we opened.
+        if not self._keyboard_bound:
+            Window.bind(on_keyboard=self._on_keyboard)
+            self._keyboard_bound = True
+
         # Must happen before any widget exists, otherwise the first labels are
         # laid out with Roboto and never re-measure.
         if not fonts.register():
@@ -1607,7 +1818,8 @@ class PicoKeyApp(App):
         for name, template in (("scan", KV_SCAN), ("device", KV_DEVICE),
                                ("log", KV_LOG), ("firmware", KV_FIRMWARE),
                                ("oath", KV_OATH), ("mgmt", KV_MGMT),
-                               ("vendor", KV_VENDOR)):
+                               ("vendor", KV_VENDOR),
+                               ("counter", KV_COUNTER)):
             screen = root.get_screen(name)
             old = getattr(screen, "content", None)
             if old is not None:
@@ -1731,8 +1943,152 @@ class PicoKeyApp(App):
     def clear_log(self):
         self.log_text = ""
 
-    def go(self, name: str):
+    # ------------------------------------------------------------ navigation
+
+    _BACK_KEYS = (27, 1001)      # ESC / Android hardware back
+
+    def go(self, name: str, record: bool = True):
+        """Switch screens and remember the one we left.
+
+        Every "back" control used to hard-code 'device' or 'scan'. Open three
+        pages in a row and the last one returned somewhere unrelated - the
+        ScreenManager has no history of its own, so the app has to keep it.
+        """
+        if not hasattr(self.root, "current"):
+            return                                  # startup crash screen
+        current = self.root.current
+        if name == current:
+            return
+        if record and name in self.root.screen_names:
+            stack = self._nav_stack
+            if name in stack:
+                # Revisiting a page already in the stack: drop everything
+                # above it instead of pushing a duplicate.
+                del stack[stack.index(name):]
+            stack.append(current)
+            del stack[:-12]                         # bounded, just in case
         self.root.current = name
+
+    def back(self):
+        """Return to the previous screen, or to the start if there is none."""
+        if not hasattr(self.root, "current"):
+            return
+        while self._nav_stack:
+            target = self._nav_stack.pop()
+            if target in self.root.screen_names and target != self.root.current:
+                self.root.current = target
+                return
+        self.root.current = "scan"
+
+    def home(self):
+        """Explicit 'back to scan' action: forget the whole history."""
+        self._nav_stack.clear()
+        if hasattr(self.root, "current"):
+            self.root.current = "scan"
+
+    def _on_keyboard(self, _window, key, *_rest):
+        # On the start screen let Android close the app; anywhere else walk
+        # the stack. Returning True consumes the event.
+        if key in self._BACK_KEYS and hasattr(self.root, "current"):
+            if self.root.current == "scan":
+                return False
+            self.back()
+            return True
+        return False
+
+    # ------------------------------------------------------ signature counter
+
+    def _counter_store(self):
+        """Lazily create the local history store (never touches the device)."""
+        if self._counter_store_obj is None:
+            try:
+                folder = self.user_data_dir
+                os.makedirs(folder, exist_ok=True)
+                path = os.path.join(folder, "counter_history.json")
+            except Exception:
+                path = "counter_history.json"
+            self._counter_store_obj = counter.CounterStore(path)
+        return self._counter_store_obj
+
+    def counter_read(self):
+        """Sample signCount through one getAssertion and compare with history."""
+        if counter is None:
+            self.counter_text = i18n.t("counter_need_ctap")
+            return
+        if self.kind != "ctap" or self.transport is None:
+            self.counter_text = i18n.t("counter_need_ctap")
+            return
+        rp = (self.counter_rp or "").strip()
+        pin = self.counter_pin or ""
+        if not rp or not pin:
+            self.counter_text = i18n.t("counter_need_input")
+            return
+
+        def work():
+            reader = counter.CounterReader(self.transport)
+            entry = reader.sample(rp, pin, on_keepalive=self._on_keepalive)
+            return self._counter_store().record(entry)
+
+        def done(res):
+            self._done()
+            self.counter_text = self._format_counter_result(res)
+            self.counter_show_history()
+            self.log(i18n.t(
+                "msg_counter_log", rp=res["rp_id"],
+                cred=(res["cred_id"] or "-")[:16],
+                n=res["sign_count"], prev=res["previous"],
+                high=res["max"], regression=res["regression"]))
+
+        self._worker(work, done, i18n.t("counter_reading"))
+
+    def _format_counter_result(self, res: dict) -> str:
+        prev = res.get("previous")
+        delta = res.get("delta")
+        if isinstance(delta, int):
+            delta_text = "%+d" % delta
+        else:
+            delta_text = "-"
+        cred = res.get("cred_id") or "-"
+        text = i18n.t("counter_result", rp=res["rp_id"],
+                      cred=(cred[:16] + "...") if len(cred) > 16 else cred,
+                      n=res["sign_count"],
+                      prev=prev if prev is not None else "-",
+                      delta=delta_text, high=res["max"],
+                      samples=res["sample_count"])
+        if res.get("counter_unused"):
+            text += "\n\n" + i18n.t("counter_unused")
+        elif res.get("regression"):
+            text += "\n\n" + i18n.t(
+                "counter_regression", n=res["sign_count"], prev=prev)
+        return text
+
+    def counter_show_history(self):
+        rows = self._counter_store().summary()
+        if not rows:
+            self.counter_history_text = i18n.t("counter_history_empty")
+            return
+        lines = []
+        for r in rows:
+            cred = r["key"]
+            cred = (cred[:12] + "...") if len(cred) > 12 else cred
+            samples = r.get("samples") or []
+            when = ""
+            if samples:
+                try:
+                    when = time.strftime(
+                        "%m-%d %H:%M", time.localtime(samples[-1]["at"]))
+                except Exception:
+                    when = ""
+            lines.append(i18n.t(
+                "counter_history_row", rp=r["rp_id"] or "-", cred=cred,
+                last=r["last"], high=r["max"],
+                n=len(samples), when=when or "-"))
+        self.counter_history_text = "\n".join(lines)
+
+    def counter_clear_history(self):
+        self._counter_store().clear()
+        self.counter_show_history()
+        self.log(i18n.t("counter_history_cleared"))
 
     # ---------------------------------------------------------------- OATH
 
@@ -2789,24 +3145,12 @@ class PicoKeyApp(App):
             return
         self.status_text = i18n.t("scan_found", n=len(channels))
         for ch in channels:
-            # A plain Button does not wrap: without text_size bound to the
-            # width, a long channel label is drawn on one line and overflows
-            # the fixed height, overlapping whatever follows.
-            #
-            # The height must follow texture_size, not size. texture_size is
-            # only correct *after* the texture has been rebuilt, which happens
-            # on the next frame - so setting the height inside a size handler
-            # uses the previous, stale value and the widget ends up shorter
-            # than what it draws. That is precisely how the hint text ended up
-            # painted over the channel button above it.
-            btn = Button(text=f"{ch.label}\n{ch.detail}",
-                         font_name=fonts.FONT_NAME,
-                         size_hint_y=None, font_size="13sp",
-                         halign="center", valign="center")
-            btn.bind(width=lambda _b, _w: setattr(
-                btn, "text_size", (btn.width - 12, None)))
-            btn.bind(texture_size=lambda _b, _t: setattr(
-                btn, "height", max(btn.texture_size[1] + dp(16), 70)))
+            # ChannelCard binds text_size to its own width and grows with the
+            # wrapped label, so the long detail line can no longer paint over
+            # the next card. The old manual width/texture_size bindings used a
+            # stale texture and produced exactly that overlap.
+            btn = Factory.ChannelCard(text=f"{ch.label}\n{ch.detail}",
+                                      font_name=fonts.FONT_NAME)
             btn.bind(on_release=lambda _b, c=ch: self.connect(c))
             box.add_widget(btn)
 
