@@ -39,6 +39,18 @@ If the build fails the job stops early and no version number is consumed.
 
 ---
 
+## [v0.4.2] - 2026-11-21
+
+### Fixed
+- Root cause and guard for the "crashes on launch" report: the missing `app.counter_alert` in `picokey_20261121-150620.log` was already fixed in v0.4.1, but the phone was still running an APK built *before* that fix - source and package were out of sync. Startup now scans every KV body it is about to parse, gives any undeclared `app.<name>` a harmless static default and writes a loud warning to the log. A single screen that still fails to parse degrades to a placeholder instead of taking the whole app down. A new `KV preflight` log line makes older builds (which have no such line) obvious at a glance.
+- `tools/check_kv_bindings.py` skipped f-strings and `+`-concatenated KV: `KV_RULES` is an f-string interpolating the palette, so an `ast.Constant`-only scan saw none of its bindings. The checker now walks `JoinedStr` and string concatenation too, verified with an injected-probe test.
+- The screen template list lived only inside `_fill_screens()`, so the preflight could not reuse it. It is now `PicoKeyApp._SCREEN_TEMPLATES`; adding a screen can no longer leave it parsed-but-unchecked.
+
+### Changed
+- The log header now reports 0.4.2, so a freshly built APK is distinguishable from an old one still reporting `v0.4.1`.
+
+---
+
 ## [v0.4.1] - 2026-11-14
 
 ### Added

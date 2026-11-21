@@ -75,7 +75,7 @@ _LOG_KEEP = 8
 # apart. APP_VERSION follows the newest heading in CHANGELOG.md (the workflow
 # copies that number into buildozer.spec); BUILD_COMMIT comes from the small
 # build_info module (overwritten by the workflow when a revision is known).
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 try:
     from picokeyapp.build_info import COMMIT as BUILD_COMMIT
 except Exception:                                    # partial upload
@@ -1627,6 +1627,16 @@ class PicoKeyApp(App):
     # which on Android looks exactly like a crash on launch.
     counter_alert = BooleanProperty(False)
     connected = False
+    # One list, shared by the startup preflight and _fill_screens(). Keeping
+    # the templates in two places is how a new screen ends up parsed but
+    # never checked (or the other way round).
+    _SCREEN_TEMPLATES = (
+        ("scan", KV_SCAN), ("device", KV_DEVICE),
+        ("log", KV_LOG), ("firmware", KV_FIRMWARE),
+        ("oath", KV_OATH), ("mgmt", KV_MGMT),
+        ("vendor", KV_VENDOR),
+        ("counter", KV_COUNTER),
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1726,6 +1736,50 @@ class PicoKeyApp(App):
         root.add_widget(scroll)
         return root
 
+    def _ensure_kv_bindings(self):
+        """Do not let one undeclared ``app.<name>`` abort the whole startup.
+
+        Builder.load_string() resolves app.* with getattr() *while it parses*,
+        so a single missing attribute raises BuilderException and build() dies
+        before any window exists - v0.4.1 shipped exactly that with
+        app.counter_alert. tools/check_kv_bindings.py checks the source, but
+        it cannot see a stale APK, nor a KV fragment assembled at runtime.
+
+        Scan the exact strings we are about to parse, give any missing name a
+        harmless default so parsing succeeds, and write a loud warning into
+        the persistent log. The screen then renders with a static default
+        instead of the app refusing to start; the warning tells the next
+        release what to declare properly.
+
+        The first log line also records the preflight result, so an old APK
+        (which has no such line) can be told apart from a current build.
+        """
+        bodies = [KV_RULES, KV_ROOT]
+        for name, template in self._SCREEN_TEMPLATES:
+            try:
+                bodies.append(self._kv(template))
+            except Exception:
+                # _kv() expands MGMT_ITF from live device state; at startup
+                # there is none. The raw template still carries every binding.
+                bodies.append(template)
+        missing = set()
+        for body in bodies:
+            for match in re.finditer(r"\bapp\.([A-Za-z_][A-Za-z0-9_]*)", body):
+                if not hasattr(self, match.group(1)):
+                    missing.add(match.group(1))
+        for attr in sorted(missing):
+            try:
+                setattr(self, attr, False)
+                _write_log("KV BINDING WARNING: app.%s is not declared on "
+                           "PicoKeyApp; using a static default. Declare it as "
+                           "a Kivy Property in the next release.\n" % attr)
+            except Exception:
+                _write_log("KV BINDING WARNING: app.%s is missing and could "
+                           "not be auto-filled.\n%s" % (attr, traceback.format_exc()))
+        _write_log("KV preflight: %d templates, %d missing binding(s)\n"
+                   % (len(bodies), len(missing)))
+        return missing
+
     def _build_impl(self):
         # Android's hardware back key. Without this the OS closes the app from
         # any sub-page instead of walking back through the pages we opened.
@@ -1754,6 +1808,8 @@ class PicoKeyApp(App):
                         else i18n.t("diag_preload_missing", names=", ".join(missing))))
 
         self._load_language()
+        # Must run before _build_root(), the first Builder.load_string() call.
+        self._ensure_kv_bindings()
         self.status_text = i18n.t("scan_intro")
         self.device_text = i18n.t("not_connected")
         root = self._build_root()
@@ -1820,16 +1876,25 @@ class PicoKeyApp(App):
         first - the widgets are simply dropped, no Builder state involved.
         """
         root = root if root is not None else self.root
-        for name, template in (("scan", KV_SCAN), ("device", KV_DEVICE),
-                               ("log", KV_LOG), ("firmware", KV_FIRMWARE),
-                               ("oath", KV_OATH), ("mgmt", KV_MGMT),
-                               ("vendor", KV_VENDOR),
-                               ("counter", KV_COUNTER)):
+        for name, template in self._SCREEN_TEMPLATES:
             screen = root.get_screen(name)
             old = getattr(screen, "content", None)
             if old is not None:
                 screen.remove_widget(old)
-            content = Builder.load_string(self._kv(template))
+            try:
+                content = Builder.load_string(self._kv(template))
+            except Exception:
+                # One broken screen must not take the other seven (and the
+                # whole launch) with it. Deliberately ASCII-only and no custom
+                # font here: this is the fallback path, so it must not depend
+                # on i18n or font registration having succeeded either.
+                _write_log("SCREEN %s FAILED\n%s"
+                           % (name, traceback.format_exc()))
+                content = Label(
+                    text="[%s] screen failed to load\n"
+                         "See picokey.log for the traceback." % name,
+                    color=(1, 0.45, 0.35, 1), font_size="14sp",
+                    halign="center", valign="middle")
             screen.content = content          # keeps .ids reachable, see ids_of()
             screen.add_widget(content)
 

@@ -10,7 +10,10 @@ template expansion tests and the Python self-tests never parse real KV.
 
 This check needs no Kivy, no GL context and no Android: it reads main.py with
 ``ast`` and compares the names used in KV strings against the App's own
-members. Run it after any UI/KV edit:
+members. It walks plain literals, f-strings (KV_RULES interpolates the
+palette) and ``+``-concatenated fragments - looking only at ast.Constant
+silently skipped every binding inside those two, which is exactly how one
+can reach an APK unchecked. Run it after any UI/KV edit:
 
     python3 tools/check_kv_bindings.py
 
@@ -33,6 +36,30 @@ APP_INHERITED = {
 }
 
 APP_REF = re.compile(r"\bapp\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _literal_text(node):
+    """Best-effort text of a string-valued expression.
+
+    A KV body is not always one plain literal: KV_RULES is an f-string, and
+    the generated fragments (curve grid, USB interface toggles) are assembled
+    with ``+``. ast.walk() visits the small constants too, but an f-string
+    splits its text across several nodes, so a bare ast.Constant scan finds
+    nothing there.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                parts.append(_literal_text(value.value) or "")
+        return "".join(parts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return (_literal_text(node.left) or "") + (_literal_text(node.right) or "")
+    return None
 
 
 def _app_members(tree):
@@ -71,9 +98,11 @@ def check_file(path):
 
     used = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            for match in APP_REF.finditer(node.value):
-                used.setdefault(match.group(1), []).append(node.lineno)
+        text = _literal_text(node)
+        if not text:
+            continue
+        for match in APP_REF.finditer(text):
+            used.setdefault(match.group(1), []).append(node.lineno)
     missing = {name: lines for name, lines in used.items()
                if name not in known}
 
