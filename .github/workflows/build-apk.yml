@@ -300,12 +300,59 @@ jobs:
           echo "=== buildozer.spec now says ==="
           grep -n '^version' buildozer.spec
 
-      - name: Cache buildozer downloads
+      # ★ 修复 2：把 Gradle 缓存一并收进来。原缓存只有 ~/.buildozer，
+      # 冷启动时 Gradle 一次性并发拉取 AGP 传递依赖，被 Maven Central
+      # 限流成 429（run-45 里 92 条 429 全部指向 repo.maven.apache.org）。
+      # key 升 v3 避开旧的空缓存；保持固定 key，不随 buildozer.spec 的
+      # 版本 bump 失效（那是源码改动，不是下载缓存的内容）。
+      - name: Cache buildozer + Gradle downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/.buildozer
-          key: buildozer-${{ runner.os }}-v2
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: buildozer-${{ runner.os }}-v3
+          restore-keys: |
+            buildozer-${{ runner.os }}-v3-
+
+      # ★ 修复 1：Gradle 镜像 + 降并发，绕开 repo.maven.apache.org 的 429。
+      # AGP 8.11.0 本体走 google()，其余传递依赖（kotlin-stdlib 2.1.20、
+      # asm 9.7.1、commons-io、httpmime、jose4j、slf4j ...）走阿里云镜像，
+      # Maven Central 留作兜底。buildscript 与 allprojects 同时注入，覆盖
+      # p4a 生成的老式 buildscript classpath 写法（run-45 就是 classpath
+      # 配置阶段炸的）。放在 cache 之后，避免被 restore 覆盖。
+      - name: Configure Gradle mirrors
+        run: |
+          mkdir -p "$HOME/.gradle/init.d"
+          cat > "$HOME/.gradle/init.d/00-mirrors.gradle" <<'GRADLE'
+          def mirrors = [
+              'https://maven.aliyun.com/repository/google',
+              'https://maven.aliyun.com/repository/public',
+              'https://maven.aliyun.com/repository/gradle-plugin'
+          ]
+          allprojects {
+              buildscript {
+                  repositories {
+                      mirrors.each { u -> maven { url u } }
+                      google()
+                      mavenCentral()
+                  }
+              }
+              repositories {
+                  mirrors.each { u -> maven { url u } }
+                  google()
+                  mavenCentral()
+              }
+          }
+          GRADLE
+          cat > "$HOME/.gradle/gradle.properties" <<'PROP'
+          org.gradle.parallel=false
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          PROP
+          echo "=== gradle mirrors ==="
+          cat "$HOME/.gradle/init.d/00-mirrors.gradle"
 
       - name: Install buildozer / Cython
         run: |
@@ -365,7 +412,20 @@ jobs:
       - name: Build debug APK
         run: |
           cd "${{ steps.locate.outputs.dir }}"
-          yes | buildozer -v android debug
+          # ★ 修复 3：429 是瞬时错误，退避 60s 最多重试 3 次。buildozer
+          # 是增量的，重跑只重做 Gradle 阶段，已下载的 SDK/NDK 与已编译的
+          # p4a recipe 全部复用，所以只有第一轮慢。
+          for i in 1 2 3; do
+            echo "=== buildozer attempt $i/3 ==="
+            if yes | buildozer -v android debug; then
+              echo "::notice::build succeeded on attempt $i"
+              exit 0
+            fi
+            echo "::warning::attempt $i failed (429 Too Many Requests?); sleeping 60s"
+            sleep 60
+          done
+          echo "::error::buildozer failed after 3 attempts"
+          exit 1
 
       - name: Diagnostics on failure
         if: failure()
